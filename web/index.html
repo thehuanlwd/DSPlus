@@ -1,0 +1,539 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DSPlus - DeepSeek V4 Proxy</title>
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+:root {
+  --bg: #0d1117; --bg2: #161b22; --bg3: #21262d; --border: #30363d;
+  --text: #c9d1d9; --text2: #8b949e; --green: #3fb950; --red: #f85149;
+  --blue: #58a6ff; --yellow: #d2991d; --purple: #a371f7; --orange: #db6d28;
+}
+body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+header { background: var(--bg2); border-bottom: 1px solid var(--border); padding: 0 20px; height: 48px; display: flex; align-items: center; justify-content: space-between; flex-shrink: 0; }
+header h1 { font-size: 18px; font-weight: 600; color: var(--blue); letter-spacing: 0.5px; }
+nav { display: flex; gap: 4px; }
+nav button { background: none; border: 1px solid transparent; color: var(--text2); padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 13px; transition: all 0.15s; }
+nav button:hover { color: var(--text); background: var(--bg3); }
+nav button.active { color: var(--text); background: var(--bg3); border-color: var(--border); }
+main { flex: 1; overflow: auto; }
+.page { display: none; padding: 20px; }
+.page.active { display: block; }
+
+.status-bar { display: flex; gap: 24px; align-items: center; padding: 12px 16px; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+.status-indicator { width: 10px; height: 10px; border-radius: 50%; background: var(--green); box-shadow: 0 0 6px var(--green); flex-shrink: 0; }
+.status-indicator.off { background: var(--red); box-shadow: 0 0 6px var(--red); }
+.status-text { font-weight: 600; font-size: 13px; }
+.stat { color: var(--text2); font-size: 12px; }
+.stat span { color: var(--text); font-weight: 600; }
+
+.toolbar { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; }
+.toolbar input { flex: 1; max-width: 300px; padding: 6px 12px; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 13px; outline: none; }
+.toolbar input:focus { border-color: var(--blue); }
+.toolbar button { padding: 6px 14px; background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; color: var(--text); cursor: pointer; font-size: 12px; }
+.toolbar button:hover { background: var(--border); }
+.toolbar button.danger { color: var(--red); border-color: var(--red); background: transparent; }
+.toolbar button.danger:hover { background: rgba(248,81,73,0.1); }
+
+.log-table { width: 100%; border-collapse: collapse; font-size: 12px; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.log-table th { text-align: left; padding: 10px 12px; background: var(--bg3); color: var(--text2); font-weight: 500; font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--border); position: sticky; top: 0; }
+.log-table td { padding: 8px 12px; border-bottom: 1px solid var(--border); }
+.log-table tbody tr { cursor: pointer; transition: background 0.1s; }
+.log-table tbody tr:hover { background: var(--bg3); }
+.log-table tbody tr.expanded { background: var(--bg3); }
+
+.badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 500; }
+.badge-yes { background: rgba(63,185,80,0.15); color: var(--green); }
+.badge-no { background: rgba(139,148,158,0.15); color: var(--text2); }
+.badge-openai { background: rgba(88,166,255,0.15); color: var(--blue); }
+.badge-anthropic { background: rgba(163,113,247,0.15); color: var(--purple); }
+.badge-unknown { background: rgba(139,148,158,0.15); color: var(--text2); }
+.status-200 { color: var(--green); }
+.status-400, .status-500, .status-502 { color: var(--red); }
+.latency { font-variant-numeric: tabular-nums; color: var(--yellow); }
+
+.detail-panel { margin-top: 12px; background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; overflow: hidden; display: none; }
+.detail-panel.visible { display: block; }
+.detail-header { padding: 10px 16px; background: var(--bg3); display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); }
+.detail-header span { font-size: 13px; font-weight: 600; }
+.detail-header button { background: none; border: none; color: var(--text2); cursor: pointer; font-size: 16px; padding: 0 4px; }
+.detail-section { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.detail-section:last-child { border-bottom: none; }
+.detail-label { font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+.detail-content { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; max-height: 400px; overflow: auto; color: var(--text); }
+
+.empty-state { text-align: center; padding: 60px 20px; color: var(--text2); }
+.empty-state .icon { font-size: 40px; margin-bottom: 12px; }
+
+.settings-form { max-width: 560px; }
+.form-group { margin-bottom: 20px; }
+.form-group label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 6px; color: var(--text); }
+.form-group input[type="text"], .form-group input[type="number"] { width: 100%; padding: 8px 12px; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 13px; outline: none; }
+.form-group input:focus { border-color: var(--blue); }
+.form-group .hint { font-size: 11px; color: var(--text2); margin-top: 4px; }
+.form-group input[type="password"] { width: 100%; padding: 8px 12px; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 13px; outline: none; }
+.form-group select { width: 100%; padding: 8px 12px; background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; color: var(--text); font-size: 13px; outline: none; cursor: pointer; }
+.form-group select:focus { border-color: var(--blue); }
+.toggle-row { display: flex; justify-content: space-between; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.toggle-row:last-child { border-bottom: none; }
+.toggle-label { font-size: 13px; }
+.toggle-desc { font-size: 11px; color: var(--text2); margin-top: 2px; }
+.toggle { position: relative; width: 44px; height: 24px; flex-shrink: 0; }
+.toggle input { display: none; }
+.toggle .slider { position: absolute; inset: 0; background: var(--border); border-radius: 12px; cursor: pointer; transition: background 0.2s; }
+.toggle .slider::before { content: ''; position: absolute; width: 18px; height: 18px; left: 3px; top: 3px; background: white; border-radius: 50%; transition: transform 0.2s; }
+.toggle input:checked + .slider { background: var(--green); }
+.toggle input:checked + .slider::before { transform: translateX(20px); }
+.btn-primary { padding: 8px 20px; background: var(--green); color: #000; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; }
+.btn-primary:hover { opacity: 0.9; }
+.btn-secondary { padding: 8px 20px; background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: 6px; font-size: 13px; cursor: pointer; margin-left: 8px; }
+.btn-secondary:hover { background: var(--border); }
+.toast { position: fixed; bottom: 20px; right: 20px; padding: 10px 20px; background: var(--green); color: #000; border-radius: 8px; font-size: 13px; font-weight: 500; opacity: 0; transform: translateY(10px); transition: all 0.3s; pointer-events: none; z-index: 100; }
+.toast.show { opacity: 1; transform: translateY(0); }
+.toast.error { background: var(--red); color: #fff; }
+
+.tokens-col { text-align: right; font-variant-numeric: tabular-nums; }
+.tokens-new { color: var(--blue); }
+.tokens-low { color: var(--text2); }
+.tokens-mid { color: var(--yellow); }
+.tokens-high { color: var(--green); }
+.tooltip-wrap { position: relative; cursor: help; }
+.tooltip-wrap .tt { visibility: hidden; opacity: 0; position: absolute; bottom: calc(100% + 4px); left: 50%; transform: translateX(-50%); background: var(--bg3); color: var(--text); padding: 6px 10px; border-radius: 6px; font-size: 11px; white-space: nowrap; z-index: 10; pointer-events: none; border: 1px solid var(--border); transition: opacity 0.15s; max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
+.tooltip-wrap:hover .tt { visibility: visible; opacity: 1; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>DSPlus</h1>
+  <nav>
+    <button class="active" data-page="dashboard">仪表盘</button>
+    <button data-page="settings">设置</button>
+  </nav>
+</header>
+
+<main>
+  <section id="dashboard" class="page active">
+    <div class="status-bar" id="statusBar">
+      <div class="status-indicator" id="statusDot"></div>
+      <span class="status-text" id="statusText">运行中</span>
+      <span class="stat">端口: <span id="statPort">--</span></span>
+      <span class="stat">总请求: <span id="statTotal">0</span></span>
+      <span class="stat">今日: <span id="statToday">0</span></span>
+    </div>
+
+    <div class="toolbar">
+      <input type="text" id="searchInput" placeholder="搜索请求...">
+      <button id="btnClear" class="danger">清空记录</button>
+    </div>
+
+    <div id="logContainer">
+      <div class="empty-state" id="emptyState">
+        <div class="icon">📡</div>
+        <p>等待请求...</p>
+        <p style="font-size:12px;margin-top:4px">向 <code style="background:var(--bg3);padding:2px 6px;border-radius:3px">localhost:<span id="emptyPort">8188</span></code> 发送API请求即可看到记录</p>
+      </div>
+      <table class="log-table" id="logTable" style="display:none">
+        <thead>
+          <tr>
+            <th style="width:75px">时间</th>
+            <th style="width:65px">格式</th>
+            <th style="width:50px">重组</th>
+            <th style="width:45px">状态</th>
+            <th style="width:58px">延迟</th>
+            <th style="width:55px">Tokens</th>
+            <th style="width:48px">缓存</th>
+            <th>端点</th>
+          </tr>
+        </thead>
+        <tbody id="logBody"></tbody>
+      </table>
+    </div>
+
+    <div class="detail-panel" id="detailPanel">
+      <div class="detail-header">
+        <span>请求详情 #<span id="detailId">--</span></span>
+        <button onclick="closeDetail()">✕</button>
+      </div>
+      <div id="detailContent"></div>
+    </div>
+  </section>
+
+  <section id="settings" class="page">
+    <div class="settings-form">
+      <div class="form-group">
+        <label>DeepSeek API Key</label>
+        <input type="password" id="cfgAPIKey" placeholder="sk-...">
+        <div class="hint">API Key 仅存储在本地 config.json 中</div>
+      </div>
+      <div class="form-group">
+        <label>监听端口</label>
+        <input type="number" id="cfgPort" min="1" max="65535" value="8188">
+        <div class="hint">修改端口后需要重启服务生效</div>
+      </div>
+      <div class="form-group">
+        <label>OpenAI 上游地址</label>
+        <input type="text" id="cfgOpenAIUpstream" value="https://api.deepseek.com">
+      </div>
+      <div class="form-group">
+        <label>Anthropic 上游地址</label>
+        <input type="text" id="cfgAnthropicUpstream" value="https://api.deepseek.com/anthropic">
+      </div>
+
+      <div class="form-group">
+        <label>思考模式</label>
+        <select id="cfgThinkingMode">
+          <option value="">不设置（由客户端决定）</option>
+          <option value="disabled">强制关闭思考</option>
+          <option value="enabled">强制启动思考</option>
+        </select>
+        <div class="hint">选择后强制覆盖请求中的 thinking 参数</div>
+      </div>
+      <div class="form-group" id="effortGroup" style="display:none">
+        <label>思考强度</label>
+        <select id="cfgReasoningEffort">
+          <option value="high">high（标准推理）</option>
+          <option value="max">max（最强推理）</option>
+        </select>
+        <div class="hint">仅在"强制启动思考"时生效</div>
+      </div>
+
+      <div class="toggle-row">
+        <div>
+          <div class="toggle-label">详细记录</div>
+          <div class="toggle-desc">完整记录请求/响应内容（可能包含敏感数据）</div>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="cfgVerbose">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="toggle-row">
+        <div>
+          <div class="toggle-label">启动时打开GUI</div>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="cfgAutoGUI" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+
+      <div style="margin-top:24px">
+        <button class="btn-primary" onclick="saveSettings()">保存配置</button>
+        <button class="btn-secondary" onclick="resetSettings()">恢复默认</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+let currentDetailId = null;
+let ws = null;
+let logs = [];
+
+function $(id) { return document.getElementById(id); }
+
+function init() {
+  document.querySelectorAll('nav button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+      const pageId = btn.dataset.page;
+      $(pageId).classList.add('active');
+      if (pageId === 'settings') loadSettings();
+    });
+  });
+
+  $('btnClear').addEventListener('click', clearLogs);
+  $('searchInput').addEventListener('input', renderLogs);
+  $('cfgThinkingMode').addEventListener('change', () => {
+    $('effortGroup').style.display = $('cfgThinkingMode').value === 'enabled' ? '' : 'none';
+  });
+  connectWS();
+  loadStatus();
+}
+
+async function loadStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const s = await r.json();
+    $('statPort').textContent = s.port;
+    $('statTotal').textContent = s.total;
+    $('statToday').textContent = s.today;
+    $('emptyPort').textContent = s.port;
+  } catch(e) {}
+}
+
+async function loadLogs() {
+  try {
+    const r = await fetch('/api/logs?limit=200');
+    const data = await r.json();
+    logs = data.entries || [];
+    renderLogs();
+    $('statTotal').textContent = data.total;
+    loadStatus();
+  } catch(e) {}
+}
+
+function renderLogs() {
+  const query = $('searchInput').value.toLowerCase();
+  const filtered = logs.filter(e => {
+    if (!query) return true;
+    return (e.path||'').toLowerCase().includes(query) ||
+           (e.format||'').toLowerCase().includes(query) ||
+           String(e.status_code).includes(query);
+  });
+
+  const body = $('logBody');
+  body.innerHTML = '';
+
+  if (filtered.length === 0) {
+    if (logs.length === 0) {
+      $('logTable').style.display = 'none';
+      $('emptyState').style.display = '';
+    } else {
+      $('logTable').style.display = '';
+      $('emptyState').style.display = 'none';
+      body.innerHTML = '<tr><td colspan="8" style="text-align:center;color:var(--text2);padding:20px">无匹配记录</td></tr>';
+    }
+    return;
+  }
+
+  $('logTable').style.display = '';
+  $('emptyState').style.display = 'none';
+
+  filtered.forEach(e => {
+    const time = new Date(e.time).toLocaleTimeString('zh-CN', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    const fmtBadge = e.format === 'anthropic' ? '<span class="badge badge-anthropic">anthropic</span>' :
+                     e.format === 'openai' ? '<span class="badge badge-openai">OpenAI</span>' :
+                     '<span class="badge badge-unknown">' + (e.format||'?') + '</span>';
+    const tfBadge = e.transformed ? '<span class="badge badge-yes">是</span>' : '<span class="badge badge-no">否</span>';
+    const scClass = e.status_code >= 400 ? 'status-400' : e.status_code >= 200 && e.status_code < 300 ? 'status-200' : '';
+    const latencyStr = e.latency_ms >= 1000 ? (e.latency_ms/1000).toFixed(1)+'s' : e.latency_ms+'ms';
+
+    let tokensHtml = '<td class="tokens-col" style="color:var(--text2)">--</td>';
+    let cacheHtml = '<td class="tokens-col" style="color:var(--text2)">--</td>';
+
+    if (e.token_usage && e.token_usage.total > 0) {
+      const u = e.token_usage;
+      const tips = `输入: ${u.prompt} | 输出: ${u.completion} | 命中: ${u.cache_hit} | 未命中: ${u.cache_miss}`;
+      tokensHtml = `<td class="tokens-col"><span class="tooltip-wrap">${u.total}<span class="tt">${tips}</span></span></td>`;
+
+      const promptTotal = u.cache_hit + u.cache_miss;
+      if (u.cache_hit === 0 && promptTotal > 0) {
+        cacheHtml = `<td class="tokens-col"><span class="tokens-new tooltip-wrap">new<span class="tt">无缓存命中（全新上下文）</span></span></td>`;
+      } else if (promptTotal > 0) {
+        const pct = u.cache_hit / promptTotal * 100;
+        const cls = pct >= 75 ? 'tokens-high' : pct >= 35 ? 'tokens-mid' : 'tokens-low';
+        cacheHtml = `<td class="tokens-col"><span class="tooltip-wrap ${cls}">${pct.toFixed(0)}%<span class="tt">命中: ${u.cache_hit} | 未命中: ${u.cache_miss}</span></span></td>`;
+      } else {
+        cacheHtml = `<td class="tokens-col"><span class="tokens-new tooltip-wrap">new<span class="tt">无缓存（新的上下文）</span></span></td>`;
+      }
+    }
+
+    const row = document.createElement('tr');
+    row.innerHTML = `
+      <td>${time}</td>
+      <td>${fmtBadge}</td>
+      <td>${tfBadge}</td>
+      <td class="${scClass}">${e.status_code}</td>
+      <td class="latency">${latencyStr}</td>
+      ${tokensHtml}
+      ${cacheHtml}
+      <td style="color:var(--text2)">${e.method||'POST'} ${e.path||''}</td>
+    `;
+    row.addEventListener('click', () => showDetail(e.id));
+    if (e.id === currentDetailId) row.classList.add('expanded');
+    body.appendChild(row);
+  });
+}
+
+async function showDetail(id) {
+  currentDetailId = id;
+  renderLogs();
+
+  try {
+    const r = await fetch('/api/logs/' + id);
+    const e = await r.json();
+
+    $('detailId').textContent = id;
+    const panel = $('detailPanel');
+    const content = $('detailContent');
+    content.innerHTML = '';
+
+    const time = new Date(e.time).toLocaleString('zh-CN');
+    let info = `
+      时间: ${time}
+      格式: ${e.format}
+      方法: ${e.method} ${e.path}
+      状态码: ${e.status_code}
+      延迟: ${e.latency_ms}ms
+      是否重组: ${e.transformed ? '是' : '否'}
+      包含System Prompt: ${e.has_system_prompt ? '是' : '否'}`;
+    addDetailSection(content, '基本信息', info.trim());
+
+    if (e.response_headers && Object.keys(e.response_headers).length > 0) {
+      const hdrText = Object.entries(e.response_headers).map(([k,v]) => `${k}: ${v}`).join('\n');
+      addDetailSection(content, '响应头', hdrText);
+    }
+
+    if (e.original_body) {
+      addDetailSection(content, '原始请求体', tryPretty(e.original_body));
+    }
+    if (e.transformed_body) {
+      addDetailSection(content, '重组后请求体', tryPretty(e.transformed_body));
+    }
+    if (e.response_body) {
+      addDetailSection(content, 'API响应体', tryPretty(e.response_body));
+    }
+
+    if (!e.original_body && !e.transformed_body && !e.response_body) {
+      addDetailSection(content, '提示', '开启"详细记录"模式以查看完整请求/响应内容。');
+    }
+
+    panel.classList.add('visible');
+    panel.scrollIntoView({behavior: 'smooth'});
+  } catch(err) {
+    console.error(err);
+  }
+}
+
+function addDetailSection(container, label, body) {
+  const div = document.createElement('div');
+  div.className = 'detail-section';
+  div.innerHTML = '<div class="detail-label">' + label + '</div><div class="detail-content">' + escapeHtml(body) + '</div>';
+  container.appendChild(div);
+}
+
+function tryPretty(str) {
+  try {
+    return JSON.stringify(JSON.parse(str), null, 2);
+  } catch(e) {
+    return str;
+  }
+}
+
+function closeDetail() {
+  currentDetailId = null;
+  $('detailPanel').classList.remove('visible');
+  renderLogs();
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host + '/ws');
+
+  ws.onmessage = (e) => {
+    try {
+      const entry = JSON.parse(e.data);
+      const idx = logs.findIndex(l => l.id === entry.id);
+      if (idx >= 0) {
+        logs[idx] = entry;
+      } else {
+        logs.unshift(entry);
+      }
+      if (logs.length > 200) logs.length = 200;
+      renderLogs();
+      loadStatus();
+
+      if (entry.id === currentDetailId) {
+        showDetail(entry.id);
+      }
+    } catch(ex) {}
+  };
+
+  ws.onclose = () => setTimeout(connectWS, 2000);
+  ws.onerror = () => ws.close();
+}
+
+async function clearLogs() {
+  try {
+    await fetch('/api/logs', { method: 'DELETE' });
+  } catch(e) {}
+  logs = [];
+  closeDetail();
+  renderLogs();
+  loadStatus();
+}
+
+async function loadSettings() {
+  try {
+    const r = await fetch('/api/config');
+    const cfg = await r.json();
+    $('cfgAPIKey').value = cfg.api_key || '';
+    $('cfgPort').value = cfg.port || 8188;
+    $('cfgOpenAIUpstream').value = cfg.openai_upstream || 'https://api.deepseek.com';
+    $('cfgAnthropicUpstream').value = cfg.anthropic_upstream || 'https://api.deepseek.com/anthropic';
+    $('cfgVerbose').checked = cfg.verbose_logging || false;
+    $('cfgAutoGUI').checked = cfg.auto_open_gui !== false;
+    $('cfgThinkingMode').value = cfg.thinking_mode || '';
+    $('cfgReasoningEffort').value = cfg.reasoning_effort || 'high';
+    $('effortGroup').style.display = cfg.thinking_mode === 'enabled' ? '' : 'none';
+  } catch(e) {
+    showToast('加载配置失败', true);
+  }
+}
+
+async function saveSettings() {
+  const payload = {
+    api_key: $('cfgAPIKey').value,
+    port: parseInt($('cfgPort').value) || 8188,
+    openai_upstream: $('cfgOpenAIUpstream').value,
+    anthropic_upstream: $('cfgAnthropicUpstream').value,
+    verbose_logging: $('cfgVerbose').checked,
+    auto_open_gui: $('cfgAutoGUI').checked,
+    thinking_mode: $('cfgThinkingMode').value,
+    reasoning_effort: $('cfgReasoningEffort').value,
+  };
+
+  try {
+    const r = await fetch('/api/config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const resp = await r.json();
+    if (resp.status === 'saved') {
+      showToast('配置已保存');
+    } else {
+      showToast('配置未变更', true);
+    }
+  } catch(e) {
+    showToast('保存失败', true);
+  }
+}
+
+function resetSettings() {
+  $('cfgAPIKey').value = '';
+  $('cfgPort').value = 8188;
+  $('cfgOpenAIUpstream').value = 'https://api.deepseek.com';
+  $('cfgAnthropicUpstream').value = 'https://api.deepseek.com/anthropic';
+  $('cfgVerbose').checked = false;
+  $('cfgAutoGUI').checked = true;
+  $('cfgThinkingMode').value = '';
+  $('cfgReasoningEffort').value = 'high';
+  $('effortGroup').style.display = 'none';
+}
+
+function showToast(msg, isError) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'toast ' + (isError ? 'error' : '') + ' show';
+  setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+loadLogs();
+setInterval(loadStatus, 5000);
+init();
+</script>
+</body>
+</html>
