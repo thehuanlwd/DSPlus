@@ -7,7 +7,7 @@ import (
 	"runtime"
 )
 
-func openGUI(url string) {
+func openGUI(url string, _ chan<- struct{}) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":

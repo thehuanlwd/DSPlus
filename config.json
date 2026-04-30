@@ -1,0 +1,11 @@
+{
+  "api_key": "sk-ef39efdb239640fcb46481eed7553d7e",
+  "port": 8188,
+  "openai_upstream": "https://api.deepseek.com",
+  "anthropic_upstream": "https://api.deepseek.com/anthropic",
+  "verbose_logging": true,
+  "auto_open_gui": true,
+  "thinking_mode": "enabled",
+  "reasoning_effort": "max",
+  "system_prompt_placement": "first"
+}

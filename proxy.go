@@ -77,7 +77,7 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 			strings.Contains(originalBody, `"role": "system"`)
 		if hasSystemPrompt {
 			var tErr error
-			transformed, transformedBody, tErr = transformOpenAI(body)
+			transformed, transformedBody, tErr = transformOpenAI(body, s.config.SystemPromptPlacement)
 			if tErr != nil {
 				log.Printf("[transform] openai error: %v", tErr)
 				transformedBody = body
@@ -88,7 +88,7 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		hasSystemPrompt = strings.Contains(originalBody, `"system":`)
 		if hasSystemPrompt {
 			var tErr error
-			transformed, transformedBody, tErr = transformAnthropic(body)
+			transformed, transformedBody, tErr = transformAnthropic(body, s.config.SystemPromptPlacement)
 			if tErr != nil {
 				log.Printf("[transform] anthropic error: %v", tErr)
 				transformedBody = body
@@ -226,7 +226,7 @@ func (s *ProxyServer) injectThinkingParams(body []byte, format string) []byte {
 
 func (s *ProxyServer) forwardStream(w http.ResponseWriter, resp *http.Response, logID int64) {
 	flusher, canFlush := w.(http.Flusher)
-	capture := newCaptureBuffer(65536)
+	capture := newCaptureBuffer(1048576)
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 65536), 1048576)
 
@@ -331,7 +331,7 @@ func isHopByHop(key string) bool {
 }
 
 func truncateBody(s string) string {
-	const maxLen = 65536
+	const maxLen = 524288
 	if len(s) > maxLen {
 		return s[:maxLen] + "\n\n... [truncated]"
 	}
@@ -364,6 +364,7 @@ func parseUsageFromMap(data map[string]interface{}) *TokenUsage {
 	}
 
 	u := &TokenUsage{}
+
 	if v, ok := usage["total_tokens"]; ok {
 		u.Total = toInt64(v)
 	}
@@ -379,6 +380,26 @@ func parseUsageFromMap(data map[string]interface{}) *TokenUsage {
 	if v, ok := usage["prompt_cache_miss_tokens"]; ok {
 		u.CacheMiss = toInt64(v)
 	}
+
+	if v, ok := usage["input_tokens"]; ok {
+		u.Prompt = toInt64(v)
+		u.CacheMiss = u.Prompt
+	}
+	if v, ok := usage["output_tokens"]; ok {
+		u.Completion = toInt64(v)
+	}
+	if v, ok := usage["cache_read_input_tokens"]; ok {
+		u.CacheHit = toInt64(v)
+		u.Prompt += u.CacheHit
+	}
+	if v, ok := usage["cache_creation_input_tokens"]; ok {
+		u.CacheMiss += toInt64(v)
+	}
+
+	if u.Total == 0 && (u.Prompt > 0 || u.Completion > 0) {
+		u.Total = u.Prompt + u.Completion
+	}
+
 	return u
 }
 

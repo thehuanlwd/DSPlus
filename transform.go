@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-func transformOpenAI(body []byte) (bool, []byte, error) {
+func transformOpenAI(body []byte, placement string) (bool, []byte, error) {
 	var req map[string]interface{}
 	if err := json.Unmarshal(body, &req); err != nil {
 		return false, body, err
@@ -23,6 +23,7 @@ func transformOpenAI(body []byte) (bool, []byte, error) {
 	var systemTexts []string
 	var newMessages []interface{}
 	firstUserIdx := -1
+	lastUserIdx := -1
 
 	for i, mRaw := range messages {
 		m, ok := mRaw.(map[string]interface{})
@@ -38,8 +39,11 @@ func transformOpenAI(body []byte) (bool, []byte, error) {
 			}
 			continue
 		}
-		if role == "user" && firstUserIdx == -1 {
-			firstUserIdx = len(newMessages)
+		if role == "user" {
+			if firstUserIdx == -1 {
+				firstUserIdx = len(newMessages)
+			}
+			lastUserIdx = len(newMessages)
 		}
 		newMessages = append(newMessages, mRaw)
 		_ = i
@@ -49,9 +53,14 @@ func transformOpenAI(body []byte) (bool, []byte, error) {
 		return false, body, nil
 	}
 
+	targetIdx := firstUserIdx
+	if placement == "last" {
+		targetIdx = lastUserIdx
+	}
+
 	systemBlock := "\n\n<system_prompt>\n" + strings.Join(systemTexts, "\n") + "\n</system_prompt>"
 
-	if userMsg, ok := newMessages[firstUserIdx].(map[string]interface{}); ok {
+	if userMsg, ok := newMessages[targetIdx].(map[string]interface{}); ok {
 		if content, ok := userMsg["content"].(string); ok {
 			userMsg["content"] = content + systemBlock
 		}
@@ -65,7 +74,7 @@ func transformOpenAI(body []byte) (bool, []byte, error) {
 	return true, result, nil
 }
 
-func transformAnthropic(body []byte) (bool, []byte, error) {
+func transformAnthropic(body []byte, placement string) (bool, []byte, error) {
 	var req map[string]interface{}
 	if err := json.Unmarshal(body, &req); err != nil {
 		return false, body, err
@@ -91,23 +100,31 @@ func transformAnthropic(body []byte) (bool, []byte, error) {
 	}
 
 	firstUserIdx := -1
+	lastUserIdx := -1
 	for i, mRaw := range messages {
 		m, ok := mRaw.(map[string]interface{})
 		if !ok {
 			continue
 		}
 		if role, _ := m["role"].(string); role == "user" {
-			firstUserIdx = i
-			break
+			if firstUserIdx == -1 {
+				firstUserIdx = i
+			}
+			lastUserIdx = i
 		}
 	}
 	if firstUserIdx == -1 {
 		return false, body, nil
 	}
 
+	targetIdx := firstUserIdx
+	if placement == "last" {
+		targetIdx = lastUserIdx
+	}
+
 	systemBlock := "\n\n<system_prompt>\n" + systemText + "\n</system_prompt>"
 
-	if userMsg, ok := messages[firstUserIdx].(map[string]interface{}); ok {
+	if userMsg, ok := messages[targetIdx].(map[string]interface{}); ok {
 		if content, ok := userMsg["content"].(string); ok {
 			userMsg["content"] = content + systemBlock
 		} else if contentBlocks, ok := userMsg["content"].([]interface{}); ok {

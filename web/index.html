@@ -59,10 +59,19 @@ main { flex: 1; overflow: auto; }
 .detail-header { padding: 10px 16px; background: var(--bg3); display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border); }
 .detail-header span { font-size: 13px; font-weight: 600; }
 .detail-header button { background: none; border: none; color: var(--text2); cursor: pointer; font-size: 16px; padding: 0 4px; }
-.detail-section { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.detail-section { padding: 12px 16px; border-bottom: 1px solid var(--border); position: relative; }
 .detail-section:last-child { border-bottom: none; }
-.detail-label { font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
-.detail-content { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; max-height: 400px; overflow: auto; color: var(--text); }
+.detail-section .copy-btn { position: absolute; top: 10px; right: 14px; padding: 3px 10px; background: var(--bg3); border: 1px solid var(--border); border-radius: 4px; color: var(--text2); cursor: pointer; font-size: 11px; transition: all 0.15s; }
+.detail-section .copy-btn:hover { color: var(--text); border-color: var(--blue); }
+.detail-section .copy-btn.copied { color: var(--green); border-color: var(--green); }
+.detail-label { font-size: 11px; color: var(--text2); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; cursor: pointer; user-select: none; }
+.detail-label:hover { color: var(--text); }
+.detail-label .arrow { display: inline-block; margin-right: 4px; transition: transform 0.15s; font-size: 10px; }
+.detail-label .arrow.collapsed { transform: rotate(-90deg); }
+.detail-section.collapsed .detail-content { display: none; }
+.detail-section.collapsed .copy-btn { display: none; }
+.detail-section.collapsed .detail-label { margin-bottom: 0; }
+.detail-content { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace; font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; overflow: auto; color: var(--text); }
 
 .empty-state { text-align: center; padding: 60px 20px; color: var(--text2); }
 .empty-state .icon { font-size: 40px; margin-bottom: 12px; }
@@ -198,6 +207,15 @@ main { flex: 1; overflow: auto; }
           <option value="max">max（最强推理）</option>
         </select>
         <div class="hint">仅在"强制启动思考"时生效</div>
+      </div>
+
+      <div class="form-group">
+        <label>System Prompt 拼接位置</label>
+        <select id="cfgPlacement">
+          <option value="first">第一条用户消息后</option>
+          <option value="last">最后一条用户消息后</option>
+        </select>
+        <div class="hint">多轮对话时，选择"最后一条"会将 system prompt 跟随最新消息</div>
       </div>
 
       <div class="toggle-row">
@@ -406,8 +424,31 @@ async function showDetail(id) {
 function addDetailSection(container, label, body) {
   const div = document.createElement('div');
   div.className = 'detail-section';
-  div.innerHTML = '<div class="detail-label">' + label + '</div><div class="detail-content">' + escapeHtml(body) + '</div>';
+  const id = 'detail-' + Date.now() + '-' + Math.random().toString(36).slice(2,6);
+  div.innerHTML =
+    '<div class="detail-label" onclick="this.parentElement.classList.toggle(\'collapsed\');this.querySelector(\'.arrow\').classList.toggle(\'collapsed\')">' +
+    '<span class="arrow">&#9662;</span>' + label +
+    '</div>' +
+    '<button class="copy-btn" onclick="copySection(\'' + id + '\')">复制</button>' +
+    '<div class="detail-content" id="' + id + '">' + escapeHtml(body) + '</div>';
   container.appendChild(div);
+}
+
+function copySection(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  const btn = el.parentElement.querySelector('.copy-btn');
+  navigator.clipboard.writeText(el.textContent).then(() => {
+    btn.textContent = '已复制';
+    btn.classList.add('copied');
+    setTimeout(() => {
+      btn.textContent = '复制';
+      btn.classList.remove('copied');
+    }, 1500);
+  }).catch(() => {
+    btn.textContent = '失败';
+    setTimeout(() => { btn.textContent = '复制'; }, 1500);
+  });
 }
 
 function tryPretty(str) {
@@ -477,6 +518,7 @@ async function loadSettings() {
     $('cfgAutoGUI').checked = cfg.auto_open_gui !== false;
     $('cfgThinkingMode').value = cfg.thinking_mode || '';
     $('cfgReasoningEffort').value = cfg.reasoning_effort || 'high';
+    $('cfgPlacement').value = cfg.system_prompt_placement || 'first';
     $('effortGroup').style.display = cfg.thinking_mode === 'enabled' ? '' : 'none';
   } catch(e) {
     showToast('加载配置失败', true);
@@ -493,6 +535,7 @@ async function saveSettings() {
     auto_open_gui: $('cfgAutoGUI').checked,
     thinking_mode: $('cfgThinkingMode').value,
     reasoning_effort: $('cfgReasoningEffort').value,
+    system_prompt_placement: $('cfgPlacement').value,
   };
 
   try {
@@ -521,6 +564,7 @@ function resetSettings() {
   $('cfgAutoGUI').checked = true;
   $('cfgThinkingMode').value = '';
   $('cfgReasoningEffort').value = 'high';
+  $('cfgPlacement').value = 'first';
   $('effortGroup').style.display = 'none';
 }
 

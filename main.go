@@ -46,18 +46,22 @@ func main() {
 		}
 	}()
 
+	shutdownCh := make(chan struct{})
 	if !*noGUI && cfg.AutoOpenGUI {
-		go openGUI(fmt.Sprintf("http://127.0.0.1:%d", cfg.Port))
+		go openGUI(fmt.Sprintf("http://127.0.0.1:%d", cfg.Port), shutdownCh)
 	}
 
 	fmt.Printf("DSPlus v0.1.0\n")
 	fmt.Printf("Listening on http://127.0.0.1:%d\n", cfg.Port)
 	fmt.Printf("GUI: http://127.0.0.1:%d\n", cfg.Port)
-	fmt.Printf("Press Ctrl+C to stop\n")
+	fmt.Printf("Press Ctrl+C or close GUI window to stop\n")
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
-
-	log.Println("[server] shutting down...")
+	select {
+	case <-sigCh:
+		log.Println("[server] shutting down via signal...")
+	case <-shutdownCh:
+		log.Println("[server] shutting down via GUI close...")
+	}
 }

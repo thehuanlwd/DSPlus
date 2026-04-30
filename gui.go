@@ -170,6 +170,12 @@ func handleAPISaveConfig(w http.ResponseWriter, r *http.Request, cfg *Config) {
 			changed = true
 		}
 	}
+	if v, ok := updates["system_prompt_placement"]; ok {
+		if s, ok := v.(string); ok {
+			cfg.SystemPromptPlacement = s
+			changed = true
+		}
+	}
 
 	if changed {
 		if err := SaveConfig(*cfg); err != nil {
