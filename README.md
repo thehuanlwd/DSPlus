@@ -319,3 +319,9 @@ DSPlus 单端口复用，同时提供代理和 GUI 服务：
 5. **Token 统计**：依赖 DeepSeek 返回的 `usage` 对象，仅在响应完整到达后更新
 6. **思考模式**：强制模式会覆盖请求中原有的 thinking 参数，请谨慎使用
 7. **reasoning_content**：DSPlus 完全透传思维链内容，不修改多轮拼接规则
+
+---
+
+💬 **LINUX DO** - 一个活跃的技术社区
+
+👉 https://linux.do/
