@@ -16,6 +16,7 @@ type Config struct {
 	ThinkingMode           string `json:"thinking_mode"`
 	ReasoningEffort        string `json:"reasoning_effort"`
 	SystemPromptPlacement  string `json:"system_prompt_placement"`
+	ExtraPrompt            string `json:"extra_prompt"`
 }
 
 func DefaultConfig() Config {

@@ -218,6 +218,12 @@ main { flex: 1; overflow: auto; }
         <div class="hint">多轮对话时，选择"最后一条"会将 system prompt 跟随最新消息</div>
       </div>
 
+      <div class="form-group">
+        <label>额外 Prompt 注入（最高准则）</label>
+        <textarea id="cfgExtraPrompt" rows="6" style="width:100%;padding:8px 12px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none;resize:vertical;font-family:inherit" placeholder="此处填写额外的最高优先级指令...&#10;将拼接到 System Prompt 之后，作为最高准则执行"></textarea>
+        <div class="hint">此内容将追加在 &lt;system_prompt&gt; 内，以 &lt;supreme_instruction&gt; 包裹作为最高优先级指令</div>
+      </div>
+
       <div class="toggle-row">
         <div>
           <div class="toggle-label">详细记录</div>
@@ -519,6 +525,7 @@ async function loadSettings() {
     $('cfgThinkingMode').value = cfg.thinking_mode || '';
     $('cfgReasoningEffort').value = cfg.reasoning_effort || 'high';
     $('cfgPlacement').value = cfg.system_prompt_placement || 'first';
+    $('cfgExtraPrompt').value = cfg.extra_prompt || '';
     $('effortGroup').style.display = cfg.thinking_mode === 'enabled' ? '' : 'none';
   } catch(e) {
     showToast('加载配置失败', true);
@@ -535,7 +542,9 @@ async function saveSettings() {
     auto_open_gui: $('cfgAutoGUI').checked,
     thinking_mode: $('cfgThinkingMode').value,
     reasoning_effort: $('cfgReasoningEffort').value,
+    reasoning_effort: $('cfgReasoningEffort').value,
     system_prompt_placement: $('cfgPlacement').value,
+    extra_prompt: $('cfgExtraPrompt').value,
   };
 
   try {
@@ -565,6 +574,7 @@ function resetSettings() {
   $('cfgThinkingMode').value = '';
   $('cfgReasoningEffort').value = 'high';
   $('cfgPlacement').value = 'first';
+  $('cfgExtraPrompt').value = '';
   $('effortGroup').style.display = 'none';
 }
 

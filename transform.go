@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-func transformOpenAI(body []byte, placement string) (bool, []byte, error) {
+func transformOpenAI(body []byte, placement string, extraPrompt string) (bool, []byte, error) {
 	var req map[string]interface{}
 	if err := json.Unmarshal(body, &req); err != nil {
 		return false, body, err
@@ -58,7 +58,11 @@ func transformOpenAI(body []byte, placement string) (bool, []byte, error) {
 		targetIdx = lastUserIdx
 	}
 
-	systemBlock := "\n\n<system_prompt>\n" + strings.Join(systemTexts, "\n") + "\n</system_prompt>"
+	joinedSystem := strings.Join(systemTexts, "\n")
+	if extraPrompt != "" {
+		joinedSystem += "\n\n<supreme_instruction>\n" + extraPrompt + "\n</supreme_instruction>"
+	}
+	systemBlock := "\n\n<system_prompt>\n" + joinedSystem + "\n</system_prompt>"
 
 	if userMsg, ok := newMessages[targetIdx].(map[string]interface{}); ok {
 		if content, ok := userMsg["content"].(string); ok {
@@ -74,7 +78,7 @@ func transformOpenAI(body []byte, placement string) (bool, []byte, error) {
 	return true, result, nil
 }
 
-func transformAnthropic(body []byte, placement string) (bool, []byte, error) {
+func transformAnthropic(body []byte, placement string, extraPrompt string) (bool, []byte, error) {
 	var req map[string]interface{}
 	if err := json.Unmarshal(body, &req); err != nil {
 		return false, body, err
@@ -123,6 +127,9 @@ func transformAnthropic(body []byte, placement string) (bool, []byte, error) {
 	}
 
 	systemBlock := "\n\n<system_prompt>\n" + systemText + "\n</system_prompt>"
+	if extraPrompt != "" {
+		systemBlock = "\n\n<system_prompt>\n" + systemText + "\n\n<supreme_instruction>\n" + extraPrompt + "\n</supreme_instruction>\n</system_prompt>"
+	}
 
 	if userMsg, ok := messages[targetIdx].(map[string]interface{}); ok {
 		if content, ok := userMsg["content"].(string); ok {

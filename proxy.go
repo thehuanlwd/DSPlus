@@ -77,7 +77,7 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 			strings.Contains(originalBody, `"role": "system"`)
 		if hasSystemPrompt {
 			var tErr error
-			transformed, transformedBody, tErr = transformOpenAI(body, s.config.SystemPromptPlacement)
+			transformed, transformedBody, tErr = transformOpenAI(body, s.config.SystemPromptPlacement, s.config.ExtraPrompt)
 			if tErr != nil {
 				log.Printf("[transform] openai error: %v", tErr)
 				transformedBody = body
@@ -88,7 +88,7 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		hasSystemPrompt = strings.Contains(originalBody, `"system":`)
 		if hasSystemPrompt {
 			var tErr error
-			transformed, transformedBody, tErr = transformAnthropic(body, s.config.SystemPromptPlacement)
+			transformed, transformedBody, tErr = transformAnthropic(body, s.config.SystemPromptPlacement, s.config.ExtraPrompt)
 			if tErr != nil {
 				log.Printf("[transform] anthropic error: %v", tErr)
 				transformedBody = body

@@ -176,6 +176,12 @@ func handleAPISaveConfig(w http.ResponseWriter, r *http.Request, cfg *Config) {
 			changed = true
 		}
 	}
+	if v, ok := updates["extra_prompt"]; ok {
+		if s, ok := v.(string); ok {
+			cfg.ExtraPrompt = s
+			changed = true
+		}
+	}
 
 	if changed {
 		if err := SaveConfig(*cfg); err != nil {
