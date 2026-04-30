@@ -17,6 +17,7 @@ type Config struct {
 	ReasoningEffort        string `json:"reasoning_effort"`
 	SystemPromptPlacement  string `json:"system_prompt_placement"`
 	ExtraPrompt            string `json:"extra_prompt"`
+	ExtraPromptPlacement   string `json:"extra_prompt_placement"`
 }
 
 func DefaultConfig() Config {
@@ -24,11 +25,13 @@ func DefaultConfig() Config {
 		Port:                  8188,
 		OpenAIUpstream:        "https://api.deepseek.com",
 		AnthropicUpstream:     "https://api.deepseek.com/anthropic",
-		VerboseLogging:        false,
+		VerboseLogging:        true,
 		AutoOpenGUI:           true,
-		ThinkingMode:          "",
-		ReasoningEffort:       "",
+		ThinkingMode:          "enabled",
+		ReasoningEffort:       "max",
 		SystemPromptPlacement: "first",
+		ExtraPromptPlacement:  "last",
+		ExtraPrompt: "# 在你的思考过程（<think>标签内）中，请遵守以下规则：\n- **方向明确时**：果断执行，不反复推翻、不过度谨慎。选定路径后直接推进，除非遇到严重阻碍因素（例如硬性报错，逻辑矛盾，用户明确否定）\n- **方向不明时**：将自我修正循环限制在 2 次尝试以内。如果仍然受阻，立即停止自我推演，直接向用户提问澄清。获取关键信息后再继续，不要自行猜测或罗列平行方案。\n- **核心原则**：思考服务于推进，而非风险防御。用决策代替犹豫，用沟通代替假设。\n- **禁止在思考过程中输出完整文件/函数代码** 如需示意，使用 `// ... 省略 ...` 或 diff 摘要，简短的行内代码引用\n- 进行代码任务时，实际的代码变更必须通过提供的工具执行。不要提前在思考或回答中输出完整的新版代码。\n- 思考的目标是确认逻辑正确，而非展示最终结果。",
 	}
 }
 

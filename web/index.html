@@ -214,14 +214,23 @@ main { flex: 1; overflow: auto; }
         <select id="cfgPlacement">
           <option value="first">第一条用户消息后</option>
           <option value="last">最后一条用户消息后</option>
+          <option value="none">不修改（保留原样）</option>
         </select>
-        <div class="hint">多轮对话时，选择"最后一条"会将 system prompt 跟随最新消息</div>
+        <div class="hint">多轮对话时，选择"最后一条"会将 system prompt 跟随最新消息（但会破坏缓存命中）</div>
       </div>
 
       <div class="form-group">
         <label>额外 Prompt 注入（最高准则）</label>
+        <select id="cfgExtraPlacement">
+          <option value="none">不添加</option>
+          <option value="first">注入到第一条用户消息后</option>
+          <option value="last">注入到最后一条用户消息后</option>
+        </select>
+        <div class="hint">选择注入位置后，下方文本框内填写具体指令内容</div>
+      </div>
+
+      <div class="form-group" id="extraPromptGroup" style="display:none">
         <textarea id="cfgExtraPrompt" rows="6" style="width:100%;padding:8px 12px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none;resize:vertical;font-family:inherit" placeholder="此处填写额外的最高优先级指令...&#10;将拼接到 System Prompt 之后，作为最高准则执行"></textarea>
-        <div class="hint">此内容将追加在 &lt;system_prompt&gt; 内，以 &lt;supreme_instruction&gt; 包裹作为最高优先级指令</div>
       </div>
 
       <div class="toggle-row">
@@ -277,6 +286,9 @@ function init() {
   $('searchInput').addEventListener('input', renderLogs);
   $('cfgThinkingMode').addEventListener('change', () => {
     $('effortGroup').style.display = $('cfgThinkingMode').value === 'enabled' ? '' : 'none';
+  });
+  $('cfgExtraPlacement').addEventListener('change', () => {
+    $('extraPromptGroup').style.display = $('cfgExtraPlacement').value === 'none' ? 'none' : '';
   });
   connectWS();
   loadStatus();
@@ -525,7 +537,9 @@ async function loadSettings() {
     $('cfgThinkingMode').value = cfg.thinking_mode || '';
     $('cfgReasoningEffort').value = cfg.reasoning_effort || 'high';
     $('cfgPlacement').value = cfg.system_prompt_placement || 'first';
+    $('cfgExtraPlacement').value = cfg.extra_prompt_placement || 'none';
     $('cfgExtraPrompt').value = cfg.extra_prompt || '';
+    $('extraPromptGroup').style.display = (cfg.extra_prompt_placement && cfg.extra_prompt_placement !== 'none') ? '' : 'none';
     $('effortGroup').style.display = cfg.thinking_mode === 'enabled' ? '' : 'none';
   } catch(e) {
     showToast('加载配置失败', true);
@@ -542,8 +556,8 @@ async function saveSettings() {
     auto_open_gui: $('cfgAutoGUI').checked,
     thinking_mode: $('cfgThinkingMode').value,
     reasoning_effort: $('cfgReasoningEffort').value,
-    reasoning_effort: $('cfgReasoningEffort').value,
     system_prompt_placement: $('cfgPlacement').value,
+    extra_prompt_placement: $('cfgExtraPlacement').value,
     extra_prompt: $('cfgExtraPrompt').value,
   };
 
@@ -574,8 +588,10 @@ function resetSettings() {
   $('cfgThinkingMode').value = '';
   $('cfgReasoningEffort').value = 'high';
   $('cfgPlacement').value = 'first';
+  $('cfgExtraPlacement').value = 'none';
   $('cfgExtraPrompt').value = '';
   $('effortGroup').style.display = 'none';
+  $('extraPromptGroup').style.display = 'none';
 }
 
 function showToast(msg, isError) {

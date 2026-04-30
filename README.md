@@ -75,8 +75,39 @@ DSPlus/
 ## 功能特性
 
 ### System Prompt 重组
-- OpenAI 格式：提取所有 `role: "system"` 消息 → 拼接到首个 `role: "user"` 尾部
-- Anthropic 格式：提取顶层 `system` 字段（支持 string 和 `[{type:"text",text:""}]` 数组）→ 拼入首条 user
+
+DSPlus 将 System Prompt 拼接到用户消息中，支持三种模式：
+
+| 模式 | 拼接位置 | 缓存表现 | 适用场景 |
+|------|---------|---------|---------|
+| **第一条用户消息后**（默认） | 拼入首条 `role:"user"` 尾部 | 缓存友好，多轮对话中系统提示词位置固定不变 | 日常使用、长对话 |
+| **最后一条用户消息后** | 拼入最后一条 `role:"user"` 尾部 | 缓存不友好，每次新消息到来时系统提示词位置都变化 | 仅当第一条消息特别简短、易被模型忽略时使用 |
+| **不修改** | 不拼接，System Prompt 保持原样 | 无影响 | 不想修改请求结构时 |
+
+**为什么「最后一条」会影响缓存命中？**
+
+DeepSeek 的 KV 缓存基于前缀匹配。将 System Prompt 拼在最后一条用户消息后，意味着每发送一条新消息，系统提示词在序列中的位置就会后移一次——前缀结构每次都在变化，缓存完全无法命中。
+
+示意（假设对话已进行到第 3 轮）：
+
+```
+第一条用户消息后（缓存友好）：
+  user:"Hello\n\n<system_prompt>你是助手</system_prompt>"   ← 固定位置，缓存可复用
+  user:"继续"
+  user:"再继续"
+
+最后一条用户消息后（缓存不友好）：
+  user:"Hello"
+  user:"继续"
+  user:"再继续\n\n<system_prompt>你是助手</system_prompt>"   ← 每次新消息都移动，缓存失效
+```
+
+> 除非你明确知道第一条消息存在被模型忽略的问题，否则推荐使用默认的「第一条用户消息后」。
+
+**额外 Prompt 注入与 System Prompt 重组完全独立**，可分别选择不同的注入位置（或不注入）。两者注入到同一条用户消息时，顺序固定为：原始内容 → `<system_prompt>` → `<supreme_instruction>`（额外 Prompt 始终在最末尾）。
+
+- OpenAI 格式：提取所有 `role: "system"` 消息内容拼接，system 消息本身从 messages 数组中移除
+- Anthropic 格式：提取顶层 `system` 字段（支持 string 和 `[{type:"text",text:""}]` 数组），处理后删除原 `system` 字段
 - 无 system prompt 时原样透传，不做任何修改
 - 重组内容用 `<system_prompt>...</system_prompt>` 包裹
 
@@ -215,6 +246,9 @@ go build -ldflags="-H windowsgui -s -w" -o DSPlus.exe .
 | Anthropic 上游 | `https://api.deepseek.com/anthropic` | Anthropic 格式转发目标 |
 | 思考模式 | 不设置 | 强制关闭 / 强制启动 / 不设置 |
 | 思考强度 | high | 仅在强制启动时生效 |
+| 拼接位置 | 第一条用户消息后 | 最后一条用户消息后 / 第一条用户消息后 / 不修改 |
+| 额外 Prompt 位置 | 不添加 | 不添加 / 第一条后 / 最后一条后 |
+| 额外 Prompt | 空 | 最高优先级指令，注入位置由上方控制 |
 | 详细记录 | 关闭 | 开启后日志记录完整请求/响应体 |
 | 启动时打开 GUI | 开启 | 可关闭以纯服务模式运行 |
 
@@ -255,7 +289,10 @@ DSPlus 单端口复用，同时提供代理和 GUI 服务：
   "verbose_logging": false,
   "auto_open_gui": true,
   "thinking_mode": "",
-  "reasoning_effort": "high"
+  "reasoning_effort": "high",
+  "system_prompt_placement": "first",
+  "extra_prompt": "",
+  "extra_prompt_placement": "none"
 }
 ```
 
@@ -269,6 +306,9 @@ DSPlus 单端口复用，同时提供代理和 GUI 服务：
 | `auto_open_gui` | bool | 否 | 启动时是否自动打开 GUI |
 | `thinking_mode` | string | 否 | `""` / `"disabled"` / `"enabled"` |
 | `reasoning_effort` | string | 否 | `"high"` / `"max"` |
+| `system_prompt_placement` | string | 否 | 拼接位置：`"first"`（首条用户消息后）/ `"last"`（末条用户消息后）/ `"none"`（不修改） |
+| `extra_prompt` | string | 否 | 额外最高优先级指令内容 |
+| `extra_prompt_placement` | string | 否 | 额外指令注入位置：`"first"` / `"last"` / `"none"`（不注入，默认） |
 
 ## 注意事项
 

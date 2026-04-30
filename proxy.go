@@ -75,9 +75,9 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 	if format == "openai" {
 		hasSystemPrompt = strings.Contains(originalBody, `"role":"system"`) ||
 			strings.Contains(originalBody, `"role": "system"`)
-		if hasSystemPrompt {
+		if hasSystemPrompt || (s.config.ExtraPrompt != "" && s.config.ExtraPromptPlacement != "none") {
 			var tErr error
-			transformed, transformedBody, tErr = transformOpenAI(body, s.config.SystemPromptPlacement, s.config.ExtraPrompt)
+			transformed, transformedBody, tErr = transformOpenAI(body, s.config.SystemPromptPlacement, s.config.ExtraPrompt, s.config.ExtraPromptPlacement)
 			if tErr != nil {
 				log.Printf("[transform] openai error: %v", tErr)
 				transformedBody = body
@@ -86,9 +86,9 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if format == "anthropic" {
 		hasSystemPrompt = strings.Contains(originalBody, `"system":`)
-		if hasSystemPrompt {
+		if hasSystemPrompt || (s.config.ExtraPrompt != "" && s.config.ExtraPromptPlacement != "none") {
 			var tErr error
-			transformed, transformedBody, tErr = transformAnthropic(body, s.config.SystemPromptPlacement, s.config.ExtraPrompt)
+			transformed, transformedBody, tErr = transformAnthropic(body, s.config.SystemPromptPlacement, s.config.ExtraPrompt, s.config.ExtraPromptPlacement)
 			if tErr != nil {
 				log.Printf("[transform] anthropic error: %v", tErr)
 				transformedBody = body

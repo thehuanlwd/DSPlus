@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-func transformOpenAI(body []byte, placement string, extraPrompt string) (bool, []byte, error) {
+func transformOpenAI(body []byte, sysPlacement string, extraPrompt string, extraPlacement string) (bool, []byte, error) {
 	var req map[string]interface{}
 	if err := json.Unmarshal(body, &req); err != nil {
 		return false, body, err
@@ -25,7 +25,7 @@ func transformOpenAI(body []byte, placement string, extraPrompt string) (bool, [
 	firstUserIdx := -1
 	lastUserIdx := -1
 
-	for i, mRaw := range messages {
+	for _, mRaw := range messages {
 		m, ok := mRaw.(map[string]interface{})
 		if !ok {
 			newMessages = append(newMessages, mRaw)
@@ -46,27 +46,66 @@ func transformOpenAI(body []byte, placement string, extraPrompt string) (bool, [
 			lastUserIdx = len(newMessages)
 		}
 		newMessages = append(newMessages, mRaw)
-		_ = i
 	}
 
-	if len(systemTexts) == 0 || firstUserIdx == -1 {
+	injectSystem := sysPlacement != "none" && len(systemTexts) > 0
+	injectExtra := extraPlacement != "none" && extraPrompt != ""
+
+	if !injectSystem && !injectExtra {
 		return false, body, nil
 	}
 
-	targetIdx := firstUserIdx
-	if placement == "last" {
-		targetIdx = lastUserIdx
+	sysTarget := -1
+	extraTarget := -1
+
+	if injectSystem {
+		if sysPlacement == "last" {
+			sysTarget = lastUserIdx
+		} else {
+			sysTarget = firstUserIdx
+		}
+		if sysTarget == -1 {
+			return false, body, nil
+		}
 	}
 
-	joinedSystem := strings.Join(systemTexts, "\n")
-	if extraPrompt != "" {
-		joinedSystem += "\n\n<supreme_instruction>\n" + extraPrompt + "\n</supreme_instruction>"
+	if injectExtra {
+		if extraPlacement == "last" {
+			extraTarget = lastUserIdx
+		} else {
+			extraTarget = firstUserIdx
+		}
+		if extraTarget == -1 {
+			return false, body, nil
+		}
 	}
-	systemBlock := "\n\n<system_prompt>\n" + joinedSystem + "\n</system_prompt>"
 
-	if userMsg, ok := newMessages[targetIdx].(map[string]interface{}); ok {
-		if content, ok := userMsg["content"].(string); ok {
-			userMsg["content"] = content + systemBlock
+	if sysTarget == extraTarget && injectSystem && injectExtra {
+		joinedSystem := strings.Join(systemTexts, "\n")
+		block := "\n\n<system_prompt>\n" + joinedSystem + "\n</system_prompt>"
+		block += "\n\n<supreme_instruction>\n" + extraPrompt + "\n</supreme_instruction>"
+		if userMsg, ok := newMessages[sysTarget].(map[string]interface{}); ok {
+			if content, ok := userMsg["content"].(string); ok {
+				userMsg["content"] = content + block
+			}
+		}
+	} else {
+		if injectSystem {
+			joinedSystem := strings.Join(systemTexts, "\n")
+			block := "\n\n<system_prompt>\n" + joinedSystem + "\n</system_prompt>"
+			if userMsg, ok := newMessages[sysTarget].(map[string]interface{}); ok {
+				if content, ok := userMsg["content"].(string); ok {
+					userMsg["content"] = content + block
+				}
+			}
+		}
+		if injectExtra {
+			block := "\n\n<supreme_instruction>\n" + extraPrompt + "\n</supreme_instruction>"
+			if userMsg, ok := newMessages[extraTarget].(map[string]interface{}); ok {
+				if content, ok := userMsg["content"].(string); ok {
+					userMsg["content"] = content + block
+				}
+			}
 		}
 	}
 
@@ -78,20 +117,16 @@ func transformOpenAI(body []byte, placement string, extraPrompt string) (bool, [
 	return true, result, nil
 }
 
-func transformAnthropic(body []byte, placement string, extraPrompt string) (bool, []byte, error) {
+func transformAnthropic(body []byte, sysPlacement string, extraPrompt string, extraPlacement string) (bool, []byte, error) {
 	var req map[string]interface{}
 	if err := json.Unmarshal(body, &req); err != nil {
 		return false, body, err
 	}
 
 	systemRaw, hasSystem := req["system"]
-	if !hasSystem {
-		return false, body, nil
-	}
-
-	systemText := extractAnthropicSystem(systemRaw)
-	if systemText == "" {
-		return false, body, nil
+	systemText := ""
+	if hasSystem {
+		systemText = extractAnthropicSystem(systemRaw)
 	}
 
 	messagesRaw, ok := req["messages"]
@@ -100,6 +135,13 @@ func transformAnthropic(body []byte, placement string, extraPrompt string) (bool
 	}
 	messages, ok := messagesRaw.([]interface{})
 	if !ok || len(messages) == 0 {
+		return false, body, nil
+	}
+
+	injectSystem := sysPlacement != "none" && systemText != ""
+	injectExtra := extraPlacement != "none" && extraPrompt != ""
+
+	if !injectSystem && !injectExtra {
 		return false, body, nil
 	}
 
@@ -117,39 +159,70 @@ func transformAnthropic(body []byte, placement string, extraPrompt string) (bool
 			lastUserIdx = i
 		}
 	}
-	if firstUserIdx == -1 {
-		return false, body, nil
-	}
 
-	targetIdx := firstUserIdx
-	if placement == "last" {
-		targetIdx = lastUserIdx
-	}
+	sysTarget := -1
+	extraTarget := -1
 
-	systemBlock := "\n\n<system_prompt>\n" + systemText + "\n</system_prompt>"
-	if extraPrompt != "" {
-		systemBlock = "\n\n<system_prompt>\n" + systemText + "\n\n<supreme_instruction>\n" + extraPrompt + "\n</supreme_instruction>\n</system_prompt>"
-	}
-
-	if userMsg, ok := messages[targetIdx].(map[string]interface{}); ok {
-		if content, ok := userMsg["content"].(string); ok {
-			userMsg["content"] = content + systemBlock
-		} else if contentBlocks, ok := userMsg["content"].([]interface{}); ok {
-			contentBlocks = append(contentBlocks, map[string]interface{}{
-				"type": "text",
-				"text": systemBlock,
-			})
-			userMsg["content"] = contentBlocks
+	if injectSystem {
+		if sysPlacement == "last" {
+			sysTarget = lastUserIdx
+		} else {
+			sysTarget = firstUserIdx
+		}
+		if sysTarget == -1 {
+			return false, body, nil
 		}
 	}
 
-	delete(req, "system")
+	if injectExtra {
+		if extraPlacement == "last" {
+			extraTarget = lastUserIdx
+		} else {
+			extraTarget = firstUserIdx
+		}
+		if extraTarget == -1 {
+			return false, body, nil
+		}
+	}
+
+	if sysTarget == extraTarget && injectSystem && injectExtra {
+		block := "\n\n<system_prompt>\n" + systemText + "\n</system_prompt>"
+		block += "\n\n<supreme_instruction>\n" + extraPrompt + "\n</supreme_instruction>"
+		injectUserMsg(messages[sysTarget], block)
+	} else {
+		if injectSystem {
+			block := "\n\n<system_prompt>\n" + systemText + "\n</system_prompt>"
+			injectUserMsg(messages[sysTarget], block)
+		}
+		if injectExtra {
+			block := "\n\n<supreme_instruction>\n" + extraPrompt + "\n</supreme_instruction>"
+			injectUserMsg(messages[extraTarget], block)
+		}
+	}
+
+	if hasSystem {
+		delete(req, "system")
+	}
 	req["messages"] = messages
 	result, err := json.Marshal(req)
 	if err != nil {
 		return false, body, err
 	}
 	return true, result, nil
+}
+
+func injectUserMsg(userMsg interface{}, block string) {
+	if m, ok := userMsg.(map[string]interface{}); ok {
+		if content, ok := m["content"].(string); ok {
+			m["content"] = content + block
+		} else if contentBlocks, ok := m["content"].([]interface{}); ok {
+			contentBlocks = append(contentBlocks, map[string]interface{}{
+				"type": "text",
+				"text": block,
+			})
+			m["content"] = contentBlocks
+		}
+	}
 }
 
 func extractAnthropicSystem(system interface{}) string {
