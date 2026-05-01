@@ -188,6 +188,42 @@ func handleAPISaveConfig(w http.ResponseWriter, r *http.Request, cfg *Config) {
 			changed = true
 		}
 	}
+	if v, ok := updates["max_tokens_mode"]; ok {
+		if s, ok := v.(string); ok {
+			cfg.MaxTokensMode = s
+			changed = true
+		}
+	}
+	if v, ok := updates["max_tokens_custom"]; ok {
+		if f, ok := v.(float64); ok && f >= 0 {
+			cfg.MaxTokensCustom = int(f)
+			changed = true
+		}
+	}
+	if v, ok := updates["anti_loop_enabled"]; ok {
+		if b, ok := v.(bool); ok {
+			cfg.AntiLoopEnabled = b
+			changed = true
+		}
+	}
+	if v, ok := updates["antiloop_retry_model"]; ok {
+		if s, ok := v.(string); ok {
+			cfg.AntiLoopRetryModel = s
+			changed = true
+		}
+	}
+	if v, ok := updates["antiloop_retry_thinking"]; ok {
+		if s, ok := v.(string); ok {
+			cfg.AntiLoopRetryThinking = s
+			changed = true
+		}
+	}
+	if v, ok := updates["antiloop_retry_effort"]; ok {
+		if s, ok := v.(string); ok {
+			cfg.AntiLoopRetryEffort = s
+			changed = true
+		}
+	}
 
 	if changed {
 		if err := SaveConfig(*cfg); err != nil {

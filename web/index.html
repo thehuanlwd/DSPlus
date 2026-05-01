@@ -50,6 +50,8 @@ main { flex: 1; overflow: auto; }
 .badge-openai { background: rgba(88,166,255,0.15); color: var(--blue); }
 .badge-anthropic { background: rgba(163,113,247,0.15); color: var(--purple); }
 .badge-unknown { background: rgba(139,148,158,0.15); color: var(--text2); }
+.badge-antiloop-analyzer { background: rgba(219,109,40,0.18); color: var(--orange); }
+.badge-antiloop-retry { background: rgba(63,185,80,0.18); color: var(--green); }
 .status-200 { color: var(--green); }
 .status-400, .status-500, .status-502 { color: var(--red); }
 .latency { font-variant-numeric: tabular-nums; color: var(--yellow); }
@@ -210,6 +212,21 @@ main { flex: 1; overflow: auto; }
       </div>
 
       <div class="form-group">
+        <label>Max Tokens（输出限制）</label>
+        <select id="cfgMaxTokensMode">
+          <option value="">不修改</option>
+          <option value="5000">5000</option>
+          <option value="32000">32000</option>
+          <option value="custom">自定义</option>
+        </select>
+        <div class="hint">限制模型最大输出 Token 数，防止复杂问题时陷入思考死循环</div>
+      </div>
+      <div class="form-group" id="maxTokensCustomGroup" style="display:none">
+        <label>自定义 Max Tokens 值</label>
+        <input type="number" id="cfgMaxTokensCustom" min="1" max="100000" value="8000">
+      </div>
+
+      <div class="form-group">
         <label>System Prompt 拼接位置</label>
         <select id="cfgPlacement">
           <option value="first">第一条用户消息后</option>
@@ -242,6 +259,42 @@ main { flex: 1; overflow: auto; }
           <input type="checkbox" id="cfgVerbose">
           <span class="slider"></span>
         </label>
+      </div>
+      <div class="toggle-row">
+        <div>
+          <div class="toggle-label">防思维循环</div>
+          <div class="toggle-desc">检测到输出被截断（finish_reason=length）时，自动分析思维过程并重试</div>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="cfgAntiLoop">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div id="antiloopSubSettings" style="display:none; padding-left: 28px; border-left: 2px solid var(--border); margin-left: 8px;">
+        <div class="form-group" style="margin-bottom: 14px;">
+          <label style="font-size:12px; color: var(--text2)">重试模型</label>
+          <select id="cfgAntiloopRetryModel">
+            <option value="deepseek-v4-flash">deepseek-v4-flash（快速）</option>
+            <option value="deepseek-v4-pro">deepseek-v4-pro（强力）</option>
+          </select>
+        </div>
+        <div class="form-group" style="margin-bottom: 14px;">
+          <label style="font-size:12px; color: var(--text2)">重试时启用思考</label>
+          <select id="cfgAntiloopRetryThinking">
+            <option value="">不启用（默认）</option>
+            <option value="enabled">启用思考</option>
+            <option value="disabled">禁用思考</option>
+          </select>
+          <div class="hint">默认不启用，重试时直接输出结论</div>
+        </div>
+        <div class="form-group" id="antiloopEffortGroup" style="display:none; margin-bottom: 14px;">
+          <label style="font-size:12px; color: var(--text2)">重试思考强度</label>
+          <select id="cfgAntiloopRetryEffort">
+            <option value="high">high（标准推理）</option>
+            <option value="max">max（最强推理）</option>
+          </select>
+          <div class="hint">仅在"启用思考"时生效</div>
+        </div>
       </div>
       <div class="toggle-row">
         <div>
@@ -289,6 +342,15 @@ function init() {
   });
   $('cfgExtraPlacement').addEventListener('change', () => {
     $('extraPromptGroup').style.display = $('cfgExtraPlacement').value === 'none' ? 'none' : '';
+  });
+  $('cfgMaxTokensMode').addEventListener('change', () => {
+    $('maxTokensCustomGroup').style.display = $('cfgMaxTokensMode').value === 'custom' ? '' : 'none';
+  });
+  $('cfgAntiLoop').addEventListener('change', () => {
+    $('antiloopSubSettings').style.display = $('cfgAntiLoop').checked ? '' : 'none';
+  });
+  $('cfgAntiloopRetryThinking').addEventListener('change', () => {
+    $('antiloopEffortGroup').style.display = $('cfgAntiloopRetryThinking').value === 'enabled' ? '' : 'none';
   });
   connectWS();
   loadStatus();
@@ -345,9 +407,18 @@ function renderLogs() {
 
   filtered.forEach(e => {
     const time = new Date(e.time).toLocaleTimeString('zh-CN', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
-    const fmtBadge = e.format === 'anthropic' ? '<span class="badge badge-anthropic">anthropic</span>' :
-                     e.format === 'openai' ? '<span class="badge badge-openai">OpenAI</span>' :
-                     '<span class="badge badge-unknown">' + (e.format||'?') + '</span>';
+    let fmtBadge;
+    if (e.request_type === 'antiloop_analyzer') {
+      fmtBadge = '<span class="badge badge-antiloop-analyzer">🔍 分析器</span>';
+    } else if (e.request_type === 'antiloop_retry') {
+      fmtBadge = '<span class="badge badge-antiloop-retry">🔄 重试</span>';
+    } else if (e.format === 'anthropic') {
+      fmtBadge = '<span class="badge badge-anthropic">anthropic</span>';
+    } else if (e.format === 'openai') {
+      fmtBadge = '<span class="badge badge-openai">OpenAI</span>';
+    } else {
+      fmtBadge = '<span class="badge badge-unknown">' + (e.format||'?') + '</span>';
+    }
     const tfBadge = e.transformed ? '<span class="badge badge-yes">是</span>' : '<span class="badge badge-no">否</span>';
     const scClass = e.status_code >= 400 ? 'status-400' : e.status_code >= 200 && e.status_code < 300 ? 'status-200' : '';
     const latencyStr = e.latency_ms >= 1000 ? (e.latency_ms/1000).toFixed(1)+'s' : e.latency_ms+'ms';
@@ -403,9 +474,11 @@ async function showDetail(id) {
     content.innerHTML = '';
 
     const time = new Date(e.time).toLocaleString('zh-CN');
+    const rtLabel = e.request_type === 'antiloop_analyzer' ? ' (防循环分析器)' :
+                    e.request_type === 'antiloop_retry' ? ' (防循环重试)' : '';
     let info = `
       时间: ${time}
-      格式: ${e.format}
+      格式: ${e.format}${rtLabel}
       方法: ${e.method} ${e.path}
       状态码: ${e.status_code}
       延迟: ${e.latency_ms}ms
@@ -541,6 +614,15 @@ async function loadSettings() {
     $('cfgExtraPrompt').value = cfg.extra_prompt || '';
     $('extraPromptGroup').style.display = (cfg.extra_prompt_placement && cfg.extra_prompt_placement !== 'none') ? '' : 'none';
     $('effortGroup').style.display = cfg.thinking_mode === 'enabled' ? '' : 'none';
+    $('cfgMaxTokensMode').value = cfg.max_tokens_mode || '';
+    $('cfgMaxTokensCustom').value = cfg.max_tokens_custom || 8000;
+    $('maxTokensCustomGroup').style.display = cfg.max_tokens_mode === 'custom' ? '' : 'none';
+    $('cfgAntiLoop').checked = cfg.anti_loop_enabled || false;
+    $('antiloopSubSettings').style.display = cfg.anti_loop_enabled ? '' : 'none';
+    $('cfgAntiloopRetryModel').value = cfg.antiloop_retry_model || 'deepseek-v4-flash';
+    $('cfgAntiloopRetryThinking').value = cfg.antiloop_retry_thinking || '';
+    $('cfgAntiloopRetryEffort').value = cfg.antiloop_retry_effort || 'high';
+    $('antiloopEffortGroup').style.display = cfg.antiloop_retry_thinking === 'enabled' ? '' : 'none';
   } catch(e) {
     showToast('加载配置失败', true);
   }
@@ -559,6 +641,12 @@ async function saveSettings() {
     system_prompt_placement: $('cfgPlacement').value,
     extra_prompt_placement: $('cfgExtraPlacement').value,
     extra_prompt: $('cfgExtraPrompt').value,
+    max_tokens_mode: $('cfgMaxTokensMode').value,
+    max_tokens_custom: parseInt($('cfgMaxTokensCustom').value) || 0,
+    anti_loop_enabled: $('cfgAntiLoop').checked,
+    antiloop_retry_model: $('cfgAntiloopRetryModel').value,
+    antiloop_retry_thinking: $('cfgAntiloopRetryThinking').value,
+    antiloop_retry_effort: $('cfgAntiloopRetryEffort').value,
   };
 
   try {
@@ -592,6 +680,15 @@ function resetSettings() {
   $('cfgExtraPrompt').value = '';
   $('effortGroup').style.display = 'none';
   $('extraPromptGroup').style.display = 'none';
+  $('cfgMaxTokensMode').value = '';
+  $('cfgMaxTokensCustom').value = 8000;
+  $('maxTokensCustomGroup').style.display = 'none';
+  $('cfgAntiLoop').checked = false;
+  $('antiloopSubSettings').style.display = 'none';
+  $('cfgAntiloopRetryModel').value = 'deepseek-v4-flash';
+  $('cfgAntiloopRetryThinking').value = '';
+  $('cfgAntiloopRetryEffort').value = 'high';
+  $('antiloopEffortGroup').style.display = 'none';
 }
 
 function showToast(msg, isError) {

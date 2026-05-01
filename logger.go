@@ -15,20 +15,21 @@ type TokenUsage struct {
 }
 
 type LogEntry struct {
-	ID               int64         `json:"id"`
-	Time             time.Time     `json:"time"`
-	Format           string        `json:"format"`
-	Method           string        `json:"method"`
-	Path             string        `json:"path"`
-	StatusCode       int           `json:"status_code"`
-	LatencyMs        int64         `json:"latency_ms"`
-	Transformed      bool          `json:"transformed"`
-	HasSystemPrompt  bool          `json:"has_system_prompt"`
+	ID               int64             `json:"id"`
+	Time             time.Time         `json:"time"`
+	Format           string            `json:"format"`
+	RequestType      string            `json:"request_type,omitempty"`  // "" = proxy, "antiloop_analyzer", "antiloop_retry"
+	Method           string            `json:"method"`
+	Path             string            `json:"path"`
+	StatusCode       int               `json:"status_code"`
+	LatencyMs        int64             `json:"latency_ms"`
+	Transformed      bool              `json:"transformed"`
+	HasSystemPrompt  bool              `json:"has_system_prompt"`
 	ResponseHeaders  map[string]string `json:"response_headers,omitempty"`
-	OriginalBody     string        `json:"original_body,omitempty"`
-	TransformedBody  string        `json:"transformed_body,omitempty"`
-	ResponseBody     string        `json:"response_body,omitempty"`
-	TokenUsage       *TokenUsage   `json:"token_usage,omitempty"`
+	OriginalBody     string            `json:"original_body,omitempty"`
+	TransformedBody  string            `json:"transformed_body,omitempty"`
+	ResponseBody     string            `json:"response_body,omitempty"`
+	TokenUsage       *TokenUsage       `json:"token_usage,omitempty"`
 }
 
 type Logger struct {
