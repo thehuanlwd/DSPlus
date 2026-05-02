@@ -24,6 +24,8 @@ type Config struct {
 	AntiLoopRetryModel     string `json:"antiloop_retry_model"`
 	AntiLoopRetryThinking  string `json:"antiloop_retry_thinking"`
 	AntiLoopRetryEffort    string `json:"antiloop_retry_effort"`
+	AntiLoopCheckTokens    int    `json:"antiloop_check_tokens"`
+	DebugMode              bool   `json:"debug_mode"`
 }
 
 func DefaultConfig() Config {
@@ -41,6 +43,7 @@ func DefaultConfig() Config {
 		AntiLoopRetryModel:    "deepseek-v4-flash",
 		AntiLoopRetryThinking: "",
 		AntiLoopRetryEffort:   "high",
+		AntiLoopCheckTokens:   0,
 	}
 }
 

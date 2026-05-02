@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -391,39 +392,60 @@ func (s *ProxyServer) forwardStreamWithAntiLoop(
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 65536), 1048576)
 
-	var finishReason string                // original finish_reason (before stripping)
-	var reasoningBuilder strings.Builder  // accumulated reasoning_content
-	var contentBuilder strings.Builder    // accumulated delta.content (for retry context)
+	var finishReason string
+	var reasoningBuilder strings.Builder
+	var contentBuilder strings.Builder
 	var lastUsage *TokenUsage
-	var streamID, streamModel string      // extracted from Phase 1 first chunk
+	var streamID, streamModel string
 	var streamCreated float64
 	capture := newCaptureBuffer(1048576)
 
+	traceKeyvals("event", "phase1_start", "threshold", s.config.AntiLoopCheckTokens,
+		"retry_model", s.config.AntiLoopRetryModel, "format", format)
+
+	// ── Proactive parallel analysis state ──
+	var completionTokens int              // cumulative from usage chunks
+	var analyzeDone chan analyzeResult    // goroutine result channel
+	var analyzeTriggered bool             // prevent duplicate triggers
+	var earlyStop bool                    // set when parallel analyzer says stop
+	var earlyStopAnalysis *AntiLoopAnalysis
+	var debugLogID int64 // debug mode: log entry ID for real-time token updates
+	chunkCount := 0
+	lastTracedTokens := 0
+
 	log.Printf("[antiloop] Phase 1 start: streaming first response in real-time")
 
-	// ── Phase 1: Stream first response, strip finish_reason to keep stream alive ──
+	// ── Debug mode: create a dedicated log entry for real-time token tracking ──
+	if s.config.DebugMode {
+		debugLogID = s.logger.Add(LogEntry{
+			Time:        time.Now(),
+			Format:      "debug",
+			RequestType: "debug",
+			Method:      "TRACE",
+			Path:        "/antiloop/tokens",
+			StatusCode:  s.config.AntiLoopCheckTokens, // misuse: shows threshold
+		})
+		log.Printf("[antiloop] debug entry created id=%d", debugLogID)
+	}
+
+	// ── Phase 1: Stream + monitor tokens + parallel analysis ──
 	for scanner.Scan() {
 		line := scanner.Text()
 
 		if !strings.HasPrefix(line, "data: ") {
-			// non-data lines (comments, etc.) — forward as-is
 			w.Write([]byte(line + "\n"))
 			capture.Write([]byte(line + "\n"))
-			if canFlush {
-				flusher.Flush()
-			}
+			if canFlush { flusher.Flush() }
 			continue
 		}
 
 		data := strings.TrimPrefix(line, "data: ")
 		if data == "[DONE]" {
-			// Hold [DONE] — stream is NOT done yet from client's perspective
 			continue
 		}
 
 		var chunk map[string]interface{}
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			// Unparseable — forward as-is
 			w.Write([]byte(line + "\n"))
 			capture.Write([]byte(line + "\n"))
 			if canFlush { flusher.Flush() }
@@ -432,26 +454,123 @@ func (s *ProxyServer) forwardStreamWithAntiLoop(
 
 		// Track response metadata from first valid chunk
 		if streamID == "" {
-			if id, _ := chunk["id"].(string); id != "" {
-				streamID = id
-			}
-			if m, _ := chunk["model"].(string); m != "" {
-				streamModel = m
-			}
-			if c, ok := chunk["created"].(float64); ok {
-				streamCreated = c
+			if id, _ := chunk["id"].(string); id != "" { streamID = id }
+			if m, _ := chunk["model"].(string); m != "" { streamModel = m }
+			if c, ok := chunk["created"].(float64); ok { streamCreated = c }
+		}
+
+		// ── Track completion_tokens from usage (may be null in most chunks) ──
+		if usage, ok := chunk["usage"].(map[string]interface{}); ok {
+			if ct, ok := usage["completion_tokens"].(float64); ok {
+				completionTokens = int(ct)
 			}
 		}
 
-		// Inspect choices: strip finish_reason, accumulate reasoning_content
+		// ── Proactive check: trigger parallel analysis at threshold ──
+		// DeepSeek only sends non-null usage in the final chunk, so we also
+		// estimate tokens from accumulated character length as a fallback.
+		estimatedTokens := (reasoningBuilder.Len() + contentBuilder.Len()) / 4
+		effectiveTokens := completionTokens
+		if estimatedTokens > effectiveTokens {
+			effectiveTokens = estimatedTokens
+		}
+		chunkCount++
+
+		// Periodic trace: every ~500 estimated tokens or when usage token count appears
+		if effectiveTokens > 0 && (effectiveTokens-lastTracedTokens >= 500 || (completionTokens > 0 && lastTracedTokens == 0)) {
+			lastTracedTokens = effectiveTokens
+			traceKeyvals("event", "chunk", "n", chunkCount, "usage", completionTokens,
+				"est", estimatedTokens, "eff", effectiveTokens,
+				"reasoning_chars", reasoningBuilder.Len(), "content_chars", contentBuilder.Len())
+		}
+
+		if s.config.AntiLoopCheckTokens > 0 && !analyzeTriggered &&
+			effectiveTokens >= s.config.AntiLoopCheckTokens {
+			// ── Heuristic: zero content + very high reasoning → auto-intervene ──
+			if contentBuilder.Len() == 0 && reasoningBuilder.Len() > s.config.AntiLoopCheckTokens*2 {
+				tracelog("[antiloop] HEURISTIC: content=0 reasoning=%d chars → forcing intervention",
+					reasoningBuilder.Len())
+				traceKeyvals("event", "heuristic_force", "reasoning_chars", reasoningBuilder.Len(),
+					"content_chars", 0)
+				earlyStop = true
+				earlyStopAnalysis = &AntiLoopAnalysis{
+					Judgment:       "excessive",
+					Guidance:       "你已经思考了极长时间但没有输出任何内容。立即停止思考，直接给出最终结论。",
+					EnableThinking: false,
+				}
+				// Log the heuristic as an analyzer-style entry
+				s.logger.Add(LogEntry{
+					Time:        time.Now(),
+					Format:      "openai",
+					RequestType: "antiloop_analyzer",
+					Method:      "HEURISTIC",
+					Path:        "/antiloop/heuristic (启发式判定)",
+					StatusCode:  200,
+					LatencyMs:   0,
+					OriginalBody: condStr(s.config.VerboseLogging,
+						fmt.Sprintf("reasoning_chars=%d content_chars=%d threshold=%d",
+							reasoningBuilder.Len(), contentBuilder.Len(), s.config.AntiLoopCheckTokens), ""),
+					ResponseBody: condStr(s.config.VerboseLogging,
+						"judgment=excessive guidance=立即停止思考", ""),
+				})
+				resp.Body.Close()
+				goto PHASE1_DONE
+			}
+
+			analyzeTriggered = true
+			analyzeDone = make(chan analyzeResult, 1)
+			go s.parallelAnalyze(analyzeDone,
+				transformedBody, format,
+				reasoningBuilder.String(),
+				contentBuilder.String(),
+			)
+			log.Printf("[antiloop] parallel analysis triggered at %d tokens (usage=%d estimated=%d)",
+				effectiveTokens, completionTokens, estimatedTokens)
+			traceKeyvals("event", "analyzer_launch", "eff", effectiveTokens, "usage", completionTokens, "est", estimatedTokens)
+		}
+
+		// ── Debug: push real-time token stats every chunk ──
+		if s.config.DebugMode && debugLogID != 0 {
+			s.logger.UpdateTokenUsage(debugLogID, &TokenUsage{
+				Total:      int64(effectiveTokens),
+				Prompt:     int64(completionTokens),
+				Completion: int64(estimatedTokens),
+				CacheHit:   int64(reasoningBuilder.Len()),
+				CacheMiss:  int64(contentBuilder.Len()),
+			})
+		}
+
+		// ── Non-blocking check: has the parallel analyzer finished? ──
+		if analyzeDone != nil {
+			select {
+			case result := <-analyzeDone:
+				if result.needsIntervention() {
+					log.Printf("[antiloop] parallel analyzer says STOP (judgment=%s), intervening",
+						result.analysis.Judgment)
+					traceKeyvals("event", "analyzer_stop", "judgment", result.analysis.Judgment,
+						"tokens", effectiveTokens)
+					earlyStop = true
+					earlyStopAnalysis = result.analysis
+					resp.Body.Close() // stop reading upstream
+					goto PHASE1_DONE
+				} else {
+					log.Printf("[antiloop] parallel analyzer says CONTINUE (judgment=%s)",
+						result.analysis.Judgment)
+					traceKeyvals("event", "analyzer_continue", "judgment", result.analysis.Judgment)
+				}
+				analyzeDone = nil
+			default:
+			}
+		}
+
+		// Inspect choices: strip finish_reason, accumulate content
 		modified := false
 		if choices, ok := chunk["choices"].([]interface{}); ok {
 			for _, c := range choices {
 				if choice, ok := c.(map[string]interface{}); ok {
-					// Save original finish_reason before stripping
 					if fr, _ := choice["finish_reason"].(string); fr != "" {
 						finishReason = fr
-						delete(choice, "finish_reason") // strip to keep stream alive
+						delete(choice, "finish_reason")
 						modified = true
 					}
 					if delta, ok := choice["delta"].(map[string]interface{}); ok {
@@ -466,12 +585,10 @@ func (s *ProxyServer) forwardStreamWithAntiLoop(
 			}
 		}
 
-		// Accumulate usage
 		if u := parseUsageFromMap(chunk); u != nil && lastUsage == nil {
 			lastUsage = u
 		}
 
-		// Write (possibly modified) chunk
 		var outLine string
 		if modified {
 			b, _ := json.Marshal(chunk)
@@ -481,58 +598,59 @@ func (s *ProxyServer) forwardStreamWithAntiLoop(
 		}
 		w.Write([]byte(outLine))
 		capture.Write([]byte(outLine))
-		if canFlush {
-			flusher.Flush()
-		}
+		if canFlush { flusher.Flush() }
 	}
 
-	log.Printf("[antiloop] Phase 1 end: finish_reason=%s streamID=%s model=%s",
-		finishReason, streamID, streamModel)
+PHASE1_DONE:
+	log.Printf("[antiloop] Phase 1 done: finish_reason=%s early_stop=%v tokens=%d",
+		finishReason, earlyStop, completionTokens)
+	traceKeyvals("event", "phase1_done", "finish_reason", finishReason, "early_stop", earlyStop,
+		"usage_tokens", completionTokens, "est_tokens", (reasoningBuilder.Len()+contentBuilder.Len())/4,
+		"reasoning_chars", reasoningBuilder.Len(), "content_chars", contentBuilder.Len())
 
-	// ── Phase 2: Retry if truncated ──
-	if finishReason == "length" {
-		log.Printf("[antiloop] Phase 2: starting anti-loop retry")
-
-		// Use defaults if metadata wasn't extracted
-		if streamID == "" {
-			streamID = "dsplus-antiloop"
-		}
-		if streamModel == "" {
-			streamModel = "deepseek-chat"
-		}
-		if streamCreated == 0 {
-			streamCreated = float64(time.Now().Unix())
-		}
-
-		// SSE event separator: blank line to prevent client from
-		// concatenating Phase 1's last event with our indicator.
-		w.Write([]byte("\n"))
-		capture.Write([]byte("\n"))
-
-		// Send status indicator (proper SSE chunk with same stream metadata)
-		s.writeAntiloopIndicator(w, flusher, canFlush, capture, streamID, streamModel, streamCreated)
-
-		// SSE event separator: blank line between indicator and retry chunks.
-		w.Write([]byte("\n"))
-		capture.Write([]byte("\n"))
-		if canFlush {
-			flusher.Flush()
-		}
-
-		// Run sub-agent analysis
+	// ── Phase 2: Retry (early-stop or length fallback) ──
+	needsRetry := earlyStop || finishReason == "length"
+	if needsRetry {
 		reasoningContent := reasoningBuilder.String()
 		phase1Content := contentBuilder.String()
-		log.Printf("[antiloop] running analyzer (reasoning=%d bytes, content=%d bytes)", len(reasoningContent), len(phase1Content))
-		retryBody, analyzeErr := s.runAntiLoopAnalysis(transformedBody, format, phase1Content, reasoningContent)
-		if analyzeErr != nil {
-			log.Printf("[antiloop] analyzer failed: %v, using simple retry", analyzeErr)
-			retryBody = s.buildSimpleRetryRequest(transformedBody, format, phase1Content, reasoningContent)
+
+		if streamID == "" { streamID = "dsplus-antiloop" }
+		if streamModel == "" { streamModel = "deepseek-chat" }
+		if streamCreated == 0 { streamCreated = float64(time.Now().Unix()) }
+
+		w.Write([]byte("\n"))
+		capture.Write([]byte("\n"))
+
+		if earlyStop {
+			log.Printf("[antiloop] early-stop indicator, analysis judgment=%s", earlyStopAnalysis.Judgment)
+		} else {
+			log.Printf("[antiloop] length-fallback indicator")
+		}
+		s.writeAntiloopIndicator(w, flusher, canFlush, capture, streamID, streamModel, streamCreated)
+
+		w.Write([]byte("\n"))
+		capture.Write([]byte("\n"))
+		if canFlush { flusher.Flush() }
+
+		var retryBody []byte
+		if earlyStop && earlyStopAnalysis != nil {
+			log.Printf("[antiloop] building early-stop retry (judgment=%s)", earlyStopAnalysis.Judgment)
+			retryBody = s.buildGuidedRetryRequest(transformedBody, format, earlyStopAnalysis, phase1Content, reasoningContent, true)
+		} else if finishReason == "length" {
+			log.Printf("[antiloop] building length-fallback retry (reasoning=%d bytes, content=%d bytes)", len(reasoningContent), len(phase1Content))
+			var analyzeErr error
+			retryBody, analyzeErr = s.runAntiLoopAnalysis(transformedBody, format, phase1Content, reasoningContent)
+			if analyzeErr != nil {
+				log.Printf("[antiloop] analyzer failed: %v, using simple retry", analyzeErr)
+				retryBody = s.buildSimpleRetryRequest(transformedBody, format, phase1Content, reasoningContent)
+			}
 		}
 
-		// Execute retry and stream its chunks to the client
-		log.Printf("[antiloop] Phase 2: executing retry request")
+		log.Printf("[antiloop] Phase 2: executing retry request (body_bytes=%d)", len(retryBody))
+		traceKeyvals("event", "retry_start", "body_bytes", len(retryBody), "early_stop", earlyStop)
 		retryFR, retryUsage := s.executeAndStreamRetry(w, flusher, canFlush, retryBody, format, capture, streamID)
-		log.Printf("[antiloop] Phase 2 end: retry finish_reason=%s", retryFR)
+		log.Printf("[antiloop] Phase 2 end: retry finish_reason=%s retry_usage=%v", retryFR, retryUsage != nil)
+		traceKeyvals("event", "retry_end", "finish_reason", retryFR, "has_usage", retryUsage != nil)
 
 		if retryFR == "length" || retryFR == "max_tokens" {
 			log.Printf("[antiloop] retry also hit limit, sending hard-limit message")
@@ -540,12 +658,10 @@ func (s *ProxyServer) forwardStreamWithAntiLoop(
 			capture.Write([]byte("\n"))
 			s.streamHardLimitSSE(w, flusher, canFlush, format, capture, streamID, streamModel, streamCreated)
 		}
-		if retryUsage != nil {
-			lastUsage = retryUsage
-		}
+		if retryUsage != nil { lastUsage = retryUsage }
 	} else {
 		log.Printf("[antiloop] no retry needed (finish_reason=%s)", finishReason)
-		// Re-emit a proper finish chunk since we stripped finish_reason from the last chunk
+		traceKeyvals("event", "no_retry", "finish_reason", finishReason)
 		if finishReason != "" {
 			w.Write([]byte("\n"))
 			capture.Write([]byte("\n"))
@@ -556,8 +672,8 @@ func (s *ProxyServer) forwardStreamWithAntiLoop(
 				"model":   streamModel,
 				"choices": []map[string]interface{}{
 					{
-						"index": 0,
-						"delta": map[string]interface{}{},
+						"index":         0,
+						"delta":         map[string]interface{}{},
 						"finish_reason": finishReason,
 					},
 				},
@@ -566,9 +682,7 @@ func (s *ProxyServer) forwardStreamWithAntiLoop(
 			line := "data: " + string(b) + "\n"
 			w.Write([]byte(line))
 			capture.Write([]byte(line))
-			if canFlush {
-				flusher.Flush()
-			}
+			if canFlush { flusher.Flush() }
 			w.Write([]byte("\n"))
 			capture.Write([]byte("\n"))
 		}
@@ -577,18 +691,12 @@ func (s *ProxyServer) forwardStreamWithAntiLoop(
 	// ── Final: send the real [DONE] ──
 	w.Write([]byte("data: [DONE]\n"))
 	capture.Write([]byte("data: [DONE]\n"))
-	if canFlush {
-		flusher.Flush()
-	}
+	if canFlush { flusher.Flush() }
 	log.Printf("[antiloop] stream complete, [DONE] sent")
+	trace("stream_done")
 
-	// Update logging
-	if lastUsage != nil {
-		s.logger.UpdateTokenUsage(logID, lastUsage)
-	}
-	if s.config.VerboseLogging {
-		s.logger.UpdateLastResponse(logID, capture.String())
-	}
+	if lastUsage != nil { s.logger.UpdateTokenUsage(logID, lastUsage) }
+	if s.config.VerboseLogging { s.logger.UpdateLastResponse(logID, capture.String()) }
 }
 
 func (s *ProxyServer) selectUpstream(format string) string {

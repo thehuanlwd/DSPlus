@@ -52,6 +52,7 @@ main { flex: 1; overflow: auto; }
 .badge-unknown { background: rgba(139,148,158,0.15); color: var(--text2); }
 .badge-antiloop-analyzer { background: rgba(219,109,40,0.18); color: var(--orange); }
 .badge-antiloop-retry { background: rgba(63,185,80,0.18); color: var(--green); }
+.badge-debug { background: rgba(219,109,40,0.25); color: var(--orange); }
 .status-200 { color: var(--green); }
 .status-400, .status-500, .status-502 { color: var(--red); }
 .latency { font-variant-numeric: tabular-nums; color: var(--yellow); }
@@ -295,6 +296,21 @@ main { flex: 1; overflow: auto; }
           </select>
           <div class="hint">仅在"启用思考"时生效</div>
         </div>
+        <div class="form-group" style="margin-bottom: 14px;">
+          <label style="font-size:12px; color: var(--text2)">检测触发Token数</label>
+          <input type="number" id="cfgAntiloopCheckTokens" min="0" max="100000" value="0" style="width:100%;padding:8px 12px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none">
+          <div class="hint">达到该值后并行分析思维过程。0=关闭，仅依赖输出上限兜底</div>
+        </div>
+      </div>
+      <div class="toggle-row">
+        <div>
+          <div class="toggle-label">Debug 模式</div>
+          <div class="toggle-desc">实时显示 Token 计数、触发状态等调试数据（仪表盘会新增 🐛 标签条目）</div>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="cfgDebugMode">
+          <span class="slider"></span>
+        </label>
       </div>
       <div class="toggle-row">
         <div>
@@ -412,6 +428,8 @@ function renderLogs() {
       fmtBadge = '<span class="badge badge-antiloop-analyzer">🔍 分析器</span>';
     } else if (e.request_type === 'antiloop_retry') {
       fmtBadge = '<span class="badge badge-antiloop-retry">🔄 重试</span>';
+    } else if (e.request_type === 'debug') {
+      fmtBadge = '<span class="badge badge-debug">🐛 Debug</span>';
     } else if (e.format === 'anthropic') {
       fmtBadge = '<span class="badge badge-anthropic">anthropic</span>';
     } else if (e.format === 'openai') {
@@ -623,6 +641,8 @@ async function loadSettings() {
     $('cfgAntiloopRetryThinking').value = cfg.antiloop_retry_thinking || '';
     $('cfgAntiloopRetryEffort').value = cfg.antiloop_retry_effort || 'high';
     $('antiloopEffortGroup').style.display = cfg.antiloop_retry_thinking === 'enabled' ? '' : 'none';
+    $('cfgAntiloopCheckTokens').value = cfg.antiloop_check_tokens || 0;
+    $('cfgDebugMode').checked = cfg.debug_mode || false;
   } catch(e) {
     showToast('加载配置失败', true);
   }
@@ -647,6 +667,8 @@ async function saveSettings() {
     antiloop_retry_model: $('cfgAntiloopRetryModel').value,
     antiloop_retry_thinking: $('cfgAntiloopRetryThinking').value,
     antiloop_retry_effort: $('cfgAntiloopRetryEffort').value,
+    antiloop_check_tokens: parseInt($('cfgAntiloopCheckTokens').value) || 0,
+    debug_mode: $('cfgDebugMode').checked,
   };
 
   try {
@@ -689,6 +711,8 @@ function resetSettings() {
   $('cfgAntiloopRetryThinking').value = '';
   $('cfgAntiloopRetryEffort').value = 'high';
   $('antiloopEffortGroup').style.display = 'none';
+  $('cfgAntiloopCheckTokens').value = 0;
+  $('cfgDebugMode').checked = false;
 }
 
 function showToast(msg, isError) {

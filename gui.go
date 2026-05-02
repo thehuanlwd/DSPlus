@@ -224,6 +224,18 @@ func handleAPISaveConfig(w http.ResponseWriter, r *http.Request, cfg *Config) {
 			changed = true
 		}
 	}
+	if v, ok := updates["antiloop_check_tokens"]; ok {
+		if f, ok := v.(float64); ok && f >= 0 {
+			cfg.AntiLoopCheckTokens = int(f)
+			changed = true
+		}
+	}
+	if v, ok := updates["debug_mode"]; ok {
+		if b, ok := v.(bool); ok {
+			cfg.DebugMode = b
+			changed = true
+		}
+	}
 
 	if changed {
 		if err := SaveConfig(*cfg); err != nil {

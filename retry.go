@@ -40,6 +40,45 @@ You MUST respond with ONLY a valid JSON object (no markdown fences, no extra tex
 - For "normal", recommend enable_thinking=true (keep thinking on retry).
 - Keep guidance under 200 characters.`
 
+// antiLoopAnalyzerPartialPrompt is used when analyzing an IN-PROGRESS thinking
+// process (not yet truncated). It focuses on detecting early signs of looping
+// or excessive reasoning that warrant preemptive intervention.
+const antiLoopAnalyzerPartialPrompt = `You are a real-time thinking-process monitor. Your task: analyze an IN-PROGRESS (not yet finished) thinking process to detect early signs of looping or excessive reasoning. IMPORTANT: the model has been thinking for a long time with NO content output yet. This is a warning sign.
+
+## Judgment Criteria
+- "loop": ≥2 repetitions of the same verification, analysis, or reasoning pattern detected. The model is going in circles.
+- "excessive": The thinking is very long with NO content output. The model should have reached conclusions by now but is still over-analyzing.
+- "normal": ONLY if the reasoning is clearly making distinct forward progress and is close to producing output. If in doubt, lean toward "excessive".
+
+## CRITICAL RULE
+If the thinking process shows NO visible content output (the assistant has said nothing yet) AND the thinking has been going on for what appears to be thousands of tokens, this is almost certainly "excessive". A healthy reasoning process should produce some output by now.
+
+## Response Format
+You MUST respond with ONLY a valid JSON object (no markdown fences, no extra text):
+{
+  "judgment": "loop|excessive|normal",
+  "guidance": "Instructions in Chinese. For 'excessive': tell it to STOP thinking and immediately output conclusions. For 'loop': point out the repeating pattern and tell it to break out. For 'normal': say '继续推理'.",
+  "enable_thinking": true or false
+}
+
+## Important
+- For "loop" or "excessive", ALWAYS recommend enable_thinking=false (DISABLE thinking in retry to force output).
+- For "normal", recommend enable_thinking=true.
+- guidance must be in Chinese, under 200 characters.
+- ERR ON THE SIDE OF INTERVENTION. A false positive (unnecessary restart) is better than letting the model spiral for thousands more tokens.`
+
+// analyzeResult wraps the parallel analyzer outcome.
+type analyzeResult struct {
+	analysis *AntiLoopAnalysis
+	err      error
+}
+
+// needsIntervention returns true if the analysis recommends stopping.
+func (ar analyzeResult) needsIntervention() bool {
+	return ar.err == nil && ar.analysis != nil &&
+		(ar.analysis.Judgment == "loop" || ar.analysis.Judgment == "excessive")
+}
+
 // hardLimitMessages provides the fixed error content when the retry also hits token limit.
 func hardLimitMessages(format string) []byte {
 	content := "抱歉，当前任务超出了处理上限。请尝试将问题拆分为更小的步骤后重新提问。"
@@ -187,7 +226,7 @@ func (s *ProxyServer) runAntiLoopAnalysis(transformedBody []byte, format string,
 	}
 
 	log.Printf("[antiloop] analysis: judgment=%s enable_thinking=%v", analysis.Judgment, analysis.EnableThinking)
-	retryBody := s.buildGuidedRetryRequest(transformedBody, format, analysis, phase1Content, reasoningContent)
+	retryBody := s.buildGuidedRetryRequest(transformedBody, format, analysis, phase1Content, reasoningContent, false)
 	return retryBody, nil
 }
 
@@ -233,6 +272,10 @@ func (s *ProxyServer) executeAndStreamRetry(
 ) (string, *TokenUsage) {
 	startTime := time.Now()
 
+	// Always log that retry was attempted (before the call)
+	log.Printf("[antiloop] retry attempt: format=%s streamID=%s body_bytes=%d", format, streamID, len(body))
+	traceKeyvals("event", "retry_attempt", "format", format, "body_bytes", len(body))
+
 	retryResp, err := s.executeRetryCall(body, format)
 	if err != nil {
 		log.Printf("[antiloop] retry call failed: %v", err)
@@ -249,6 +292,22 @@ func (s *ProxyServer) executeAndStreamRetry(
 		return "", nil
 	}
 	defer retryResp.Body.Close()
+
+	// Deferred fallback: ensure a log entry exists no matter what
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[antiloop] RETRY PANIC: %v", r)
+			s.logger.Add(LogEntry{
+				Time:        startTime,
+				Format:      format,
+				RequestType: "antiloop_retry",
+				Method:      "POST",
+				Path:        "/chat/completions (防循环重试-panic)",
+				StatusCode:  500,
+				LatencyMs:   time.Since(startTime).Milliseconds(),
+			})
+		}
+	}()
 
 	scanner := bufio.NewScanner(retryResp.Body)
 	scanner.Buffer(make([]byte, 0, 65536), 1048576)
@@ -297,6 +356,10 @@ func (s *ProxyServer) executeAndStreamRetry(
 	}
 
 	// Log the retry call
+	log.Printf("[antiloop] retry logging: status=%d latency=%dms body_bytes=%d resp_bytes=%d",
+		retryResp.StatusCode, time.Since(startTime).Milliseconds(), len(body), respCapture.Len())
+	traceKeyvals("event", "retry_logging", "status", retryResp.StatusCode,
+		"latency_ms", time.Since(startTime).Milliseconds(), "resp_bytes", respCapture.Len())
 	retryLogID := s.logger.Add(LogEntry{
 		Time:        startTime,
 		Format:      format,
@@ -308,6 +371,7 @@ func (s *ProxyServer) executeAndStreamRetry(
 		OriginalBody:    condStr(s.config.VerboseLogging, truncateBody(string(body)), ""),
 		ResponseBody:    condStr(s.config.VerboseLogging, truncateBody(respCapture.String()), ""),
 	})
+	log.Printf("[antiloop] retry logged: id=%d", retryLogID)
 	if lastUsage != nil {
 		s.logger.UpdateTokenUsage(retryLogID, lastUsage)
 	}
@@ -469,6 +533,116 @@ func (s *ProxyServer) callAntiLoopAnalyzer(transformedBody []byte, format string
 	return &analysis, nil
 }
 
+// parallelAnalyze is called from a goroutine to analyze the in-progress thinking.
+// It sends the result (or error) to the provided channel.
+func (s *ProxyServer) parallelAnalyze(
+	done chan<- analyzeResult,
+	transformedBody []byte,
+	format string,
+	reasoningSnapshot string,
+	phase1Content string,
+) {
+	analysis, err := s.callAntiLoopAnalyzerPartial(transformedBody, format, reasoningSnapshot, phase1Content)
+	done <- analyzeResult{analysis, err}
+}
+
+// callAntiLoopAnalyzerPartial is like callAntiLoopAnalyzer but uses a different
+// prompt optimized for IN-PROGRESS thinking detection (not truncated).
+func (s *ProxyServer) callAntiLoopAnalyzerPartial(
+	transformedBody []byte,
+	format string,
+	reasoningContent string,
+	phase1Content string,
+) (*AntiLoopAnalysis, error) {
+	startTime := time.Now()
+
+	analysisBody, err := buildAnalyzerRequestPartial(transformedBody, format, reasoningContent, phase1Content)
+	if err != nil {
+		return nil, fmt.Errorf("build partial analyzer request: %w", err)
+	}
+
+	upstreamURL := s.config.OpenAIUpstream + "/chat/completions"
+
+	req, err := http.NewRequest("POST", upstreamURL, bytes.NewReader(analysisBody))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+s.config.APIKey)
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		s.logger.Add(LogEntry{
+			Time:        startTime,
+			Format:      "openai",
+			RequestType: "antiloop_analyzer",
+			Method:      "POST",
+			Path:        "/chat/completions (并行思维分析)",
+			StatusCode:  502,
+			LatencyMs:   time.Since(startTime).Milliseconds(),
+		})
+		return nil, fmt.Errorf("partial analyzer API call: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read partial analyzer response: %w", err)
+	}
+
+	var oaiResp map[string]interface{}
+	if err := json.Unmarshal(respBytes, &oaiResp); err != nil {
+		return nil, fmt.Errorf("parse partial analyzer response: %w", err)
+	}
+
+	// Log the analyzer call
+	analyzerLogID := s.logger.Add(LogEntry{
+		Time:        startTime,
+		Format:      "openai",
+		RequestType: "antiloop_analyzer",
+		Method:      "POST",
+		Path:        "/chat/completions (并行思维分析)",
+		StatusCode:  resp.StatusCode,
+		LatencyMs:   time.Since(startTime).Milliseconds(),
+		OriginalBody:    condStr(s.config.VerboseLogging, truncateBody(string(analysisBody)), ""),
+		ResponseBody:    condStr(s.config.VerboseLogging, truncateBody(string(respBytes)), ""),
+	})
+	if u := parseUsageFromMap(oaiResp); u != nil {
+		s.logger.UpdateTokenUsage(analyzerLogID, u)
+	}
+
+	choices, ok := oaiResp["choices"].([]interface{})
+	if !ok || len(choices) == 0 {
+		return nil, fmt.Errorf("no choices in partial analyzer response")
+	}
+	choice, ok := choices[0].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid choice format")
+	}
+	message, ok := choice["message"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("no message in partial analyzer choice")
+	}
+	content, _ := message["content"].(string)
+	if content == "" {
+		return nil, fmt.Errorf("empty partial analyzer response")
+	}
+
+	content = strings.TrimSpace(content)
+	content = strings.TrimPrefix(content, "```json")
+	content = strings.TrimPrefix(content, "```")
+	content = strings.TrimSuffix(content, "```")
+	content = strings.TrimSpace(content)
+
+	var analysis AntiLoopAnalysis
+	if err := json.Unmarshal([]byte(content), &analysis); err != nil {
+		return nil, fmt.Errorf("parse partial analysis JSON: %w (content: %s)", err, truncateBody(content))
+	}
+
+	return &analysis, nil
+}
+
 // buildAnalyzerRequest creates the request body for the sub-agent analyzer.
 func buildAnalyzerRequest(transformedBody []byte, format string, reasoningContent string) ([]byte, error) {
 	var original map[string]interface{}
@@ -476,12 +650,10 @@ func buildAnalyzerRequest(transformedBody []byte, format string, reasoningConten
 		return nil, err
 	}
 
-	// Extract messages from the original request
 	var messages []interface{}
 	if msgs, ok := original["messages"].([]interface{}); ok {
 		messages = msgs
 	} else {
-		// Anthropic format: wrap in user message
 		messages = []interface{}{
 			map[string]interface{}{
 				"role":    "user",
@@ -490,14 +662,11 @@ func buildAnalyzerRequest(transformedBody []byte, format string, reasoningConten
 		}
 	}
 
-	// Serialize messages for the analyzer
 	messagesJSON, _ := json.MarshalIndent(messages, "", "  ")
 
-	// Build truncated reasoning context (max 8000 chars to keep analyzer request small)
 	truncatedReasoning := reasoningContent
 	const maxReasoningLen = 8000
 	if len(truncatedReasoning) > maxReasoningLen {
-		// Keep beginning and end (beginning has early thinking, end has the loop pattern)
 		half := maxReasoningLen / 2
 		truncatedReasoning = truncatedReasoning[:half] + "\n\n... [中间省略] ...\n\n" + truncatedReasoning[len(truncatedReasoning)-half:]
 	}
@@ -522,9 +691,68 @@ func buildAnalyzerRequest(transformedBody []byte, format string, reasoningConten
 				"content": userContent,
 			},
 		},
-		"max_tokens":        1024,
-		"response_format":   map[string]interface{}{"type": "json_object"},
-		"thinking":          map[string]interface{}{"type": "disabled"},
+		"max_tokens":      1024,
+		"response_format": map[string]interface{}{"type": "json_object"},
+		"thinking":        map[string]interface{}{"type": "disabled"},
+	}
+
+	return json.Marshal(analyzerReq)
+}
+
+// buildAnalyzerRequestPartial creates the request body for the parallel (in-progress) analyzer.
+func buildAnalyzerRequestPartial(transformedBody []byte, format string, reasoningContent string, phase1Content string) ([]byte, error) {
+	var original map[string]interface{}
+	if err := json.Unmarshal(transformedBody, &original); err != nil {
+		return nil, err
+	}
+
+	var messages []interface{}
+	if msgs, ok := original["messages"].([]interface{}); ok {
+		messages = msgs
+	} else {
+		messages = []interface{}{
+			map[string]interface{}{
+				"role":    "user",
+				"content": fmt.Sprintf("Original request (Anthropic format):\n%s", string(transformedBody)),
+			},
+		}
+	}
+
+	messagesJSON, _ := json.MarshalIndent(messages, "", "  ")
+
+	truncatedReasoning := reasoningContent
+	const maxReasoningLen = 6000
+	if len(truncatedReasoning) > maxReasoningLen {
+		half := maxReasoningLen / 2
+		truncatedReasoning = truncatedReasoning[:half] + "\n\n... [中间省略] ...\n\n" + truncatedReasoning[len(truncatedReasoning)-half:]
+	}
+
+	userContent := fmt.Sprintf(`## 完整对话上下文
+%s
+
+## 当前已输出的内容（部分）
+%s
+
+## 正在进行的思考过程（部分）
+%s
+
+请分析上述思考过程是否已出现循环迹象或过度推理，并返回 JSON 结果。`, string(messagesJSON), truncateBody(phase1Content), truncatedReasoning)
+
+	analyzerReq := map[string]interface{}{
+		"model": "deepseek-chat",
+		"messages": []map[string]interface{}{
+			{
+				"role":    "system",
+				"content": antiLoopAnalyzerPartialPrompt,
+			},
+			{
+				"role":    "user",
+				"content": userContent,
+			},
+		},
+		"max_tokens":      1024,
+		"response_format": map[string]interface{}{"type": "json_object"},
+		"thinking":        map[string]interface{}{"type": "disabled"},
 	}
 
 	return json.Marshal(analyzerReq)
@@ -532,7 +760,7 @@ func buildAnalyzerRequest(transformedBody []byte, format string, reasoningConten
 
 // buildGuidedRetryRequest creates the retry request body with full context from Phase 1,
 // the analyzer's guidance, and the configured retry model/thinking settings.
-func (s *ProxyServer) buildGuidedRetryRequest(transformedBody []byte, format string, analysis *AntiLoopAnalysis, phase1Content string, reasoningContent string) []byte {
+func (s *ProxyServer) buildGuidedRetryRequest(transformedBody []byte, format string, analysis *AntiLoopAnalysis, phase1Content string, reasoningContent string, earlyStop bool) []byte {
 	var data map[string]interface{}
 	if err := json.Unmarshal(transformedBody, &data); err != nil {
 		return transformedBody
@@ -548,7 +776,7 @@ func (s *ProxyServer) buildGuidedRetryRequest(transformedBody []byte, format str
 	s.applyRetryThinking(data, analysis)
 
 	// 4. Append Phase 1 context as new messages
-	s.injectRetryContext(data, format, phase1Content, reasoningContent, analysis)
+	s.injectRetryContext(data, format, phase1Content, reasoningContent, analysis, earlyStop)
 
 	b, err := json.Marshal(data)
 	if err != nil {
@@ -580,7 +808,8 @@ func (s *ProxyServer) applyRetryThinking(data map[string]interface{}, analysis *
 }
 
 // injectRetryContext appends Phase 1's output and the analyzer's guidance as new messages.
-func (s *ProxyServer) injectRetryContext(data map[string]interface{}, format string, phase1Content string, reasoningContent string, analysis *AntiLoopAnalysis) {
+// earlyStop: true if the retry was triggered preemptively (not by finish_reason=length).
+func (s *ProxyServer) injectRetryContext(data map[string]interface{}, format string, phase1Content string, reasoningContent string, analysis *AntiLoopAnalysis, earlyStop bool) {
 	messagesRaw, ok := data["messages"]
 	if !ok {
 		return
@@ -599,11 +828,22 @@ func (s *ProxyServer) injectRetryContext(data map[string]interface{}, format str
 	}
 
 	// Build guidance: analysis + reasoning summary
-	guidanceText := "你的上一轮回答因输出超长被截断，但已取得部分进展。\n\n"
-	if analysis != nil {
+	var guidanceText string
+	if earlyStop {
+		guidanceText = "你的推理被主动中断——检测到"
+		if analysis != nil {
+			guidanceText += analysis.Judgment + "（" + analysis.Guidance + "）"
+		} else {
+			guidanceText += "思维过程过长或存在循环"
+		}
+		guidanceText += "。\n\n"
+	} else {
+		guidanceText = "你的上一轮回答因输出超长被截断，但已取得部分进展。\n\n"
+	}
+	if analysis != nil && !earlyStop {
 		guidanceText += "分析判定：" + analysis.Judgment + "\n"
 		guidanceText += "改进指导：" + analysis.Guidance + "\n\n"
-	} else {
+	} else if analysis == nil {
 		guidanceText += "请精简思考过程，直接给出最终结论。\n\n"
 	}
 
@@ -653,7 +893,7 @@ func (s *ProxyServer) buildSimpleRetryRequest(transformedBody []byte, format str
 	}
 
 	// Inject Phase 1 context
-	s.injectRetryContext(data, format, phase1Content, reasoningContent, nil)
+	s.injectRetryContext(data, format, phase1Content, reasoningContent, nil, false)
 
 	b, err := json.Marshal(data)
 	if err != nil {

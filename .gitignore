@@ -5,7 +5,7 @@ config.json
 *.exe
 *.exe~
 DSPlus_console.exe
-
+antiloop_trace.log
 # === Go ===
 *.test
 *.out

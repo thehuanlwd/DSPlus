@@ -21,6 +21,8 @@ func main() {
 		cfg = DefaultConfig()
 	}
 
+	initTrace()
+
 	if *portFlag > 0 {
 		cfg.Port = *portFlag
 	}
