@@ -19,6 +19,14 @@ type AntiLoopAnalysis struct {
 	EnableThinking bool   `json:"enable_thinking"`  // whether retry should enable thinking
 }
 
+// ── Tuning constants ─────────────────────────────────────────────────────────
+
+const (
+	analyzerTimeout     = 15 * time.Second
+	analyzerMaxTokens   = 1024
+	reasoningSummaryLen = 3000 // max chars of reasoning injected into retry guidance
+)
+
 const antiLoopAnalyzerPrompt = `You are a thinking-process analyzer for an AI assistant. Your task: analyze a truncated thinking process to determine whether it got stuck in a repetitive loop or excessive reasoning.
 
 ## Judgment Criteria
@@ -271,14 +279,15 @@ func (s *ProxyServer) executeAndStreamRetry(
 	streamID string,
 ) (string, *TokenUsage) {
 	startTime := time.Now()
+	reqID := nextTraceReqID()
 
 	// Always log that retry was attempted (before the call)
-	log.Printf("[antiloop] retry attempt: format=%s streamID=%s body_bytes=%d", format, streamID, len(body))
-	traceKeyvals("event", "retry_attempt", "format", format, "body_bytes", len(body))
+	log.Printf("[antiloop] retry attempt: reqID=%d format=%s streamID=%s body_bytes=%d", reqID, format, streamID, len(body))
+	traceKeyvals("event", "retry_attempt", "req_id", reqID, "format", format, "body_bytes", len(body))
 
 	retryResp, err := s.executeRetryCall(body, format)
 	if err != nil {
-		log.Printf("[antiloop] retry call failed: %v", err)
+		log.Printf("[antiloop] reqID=%d retry call failed: %v", reqID, err)
 		s.logger.Add(LogEntry{
 			Time:        startTime,
 			Format:      format,
@@ -296,7 +305,7 @@ func (s *ProxyServer) executeAndStreamRetry(
 	// Deferred fallback: ensure a log entry exists no matter what
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("[antiloop] RETRY PANIC: %v", r)
+			log.Printf("[antiloop] reqID=%d RETRY PANIC: %v", reqID, r)
 			s.logger.Add(LogEntry{
 				Time:        startTime,
 				Format:      format,
@@ -315,8 +324,13 @@ func (s *ProxyServer) executeAndStreamRetry(
 	var finishReason string
 	var lastUsage *TokenUsage
 	var respCapture bytes.Buffer
+	var retryChunkCount int
+	watchdogStop := startProgressWatchdog(fmt.Sprintf("RetryPhase(reqID=%d)", reqID), 60*time.Second)
 
 	for scanner.Scan() {
+		watchdogStop = resetProgressWatchdog(watchdogStop)
+		retryChunkCount++
+
 		line := scanner.Text()
 
 		if strings.HasPrefix(line, "data: ") {
@@ -347,12 +361,25 @@ func (s *ProxyServer) executeAndStreamRetry(
 			}
 		}
 
-		w.Write([]byte(line + "\n"))
+		if _, err := w.Write([]byte(line + "\n")); err != nil {
+			log.Printf("[antiloop] reqID=%d retry write error: %v", reqID, err)
+			traceKeyvals("event", "retry_write_error", "req_id", reqID, "error", err.Error())
+			break
+		}
 		capture.Write([]byte(line + "\n"))
 		respCapture.Write([]byte(line + "\n"))
 		if canFlush {
 			flusher.Flush()
 		}
+	}
+
+	close(watchdogStop)
+	if err := scanner.Err(); err != nil {
+		log.Printf("[antiloop] reqID=%d retry scanner error: %v", reqID, err)
+		traceKeyvals("event", "retry_scanner_error", "req_id", reqID, "error", err.Error())
+	} else {
+		log.Printf("[antiloop] reqID=%d retry scanner finished (chunks=%d)", reqID, retryChunkCount)
+		traceKeyvals("event", "retry_scanner_eof", "req_id", reqID, "chunks", retryChunkCount)
 	}
 
 	// Log the retry call
@@ -426,13 +453,45 @@ func (s *ProxyServer) executeRetryCall(body []byte, format string) (*http.Respon
 	return s.client.Do(req)
 }
 func (s *ProxyServer) callAntiLoopAnalyzer(transformedBody []byte, format string, reasoningContent string) (*AntiLoopAnalysis, error) {
-	startTime := time.Now()
-
-	// Build analysis request: extract messages and add reasoning context
 	analysisBody, err := buildAnalyzerRequest(transformedBody, format, reasoningContent)
 	if err != nil {
 		return nil, fmt.Errorf("build analyzer request: %w", err)
 	}
+	return s.callAntiLoopAnalyzerWith(analysisBody, "思维分析")
+}
+
+// parallelAnalyze is called from a goroutine to analyze the in-progress thinking.
+// It sends the result (or error) to the provided channel.
+func (s *ProxyServer) parallelAnalyze(
+	done chan<- analyzeResult,
+	transformedBody []byte,
+	format string,
+	reasoningSnapshot string,
+	phase1Content string,
+) {
+	analysis, err := s.callAntiLoopAnalyzerPartial(transformedBody, format, reasoningSnapshot, phase1Content)
+	done <- analyzeResult{analysis, err}
+}
+
+// callAntiLoopAnalyzerPartial is like callAntiLoopAnalyzer but uses a different
+// prompt optimized for IN-PROGRESS thinking detection (not truncated).
+func (s *ProxyServer) callAntiLoopAnalyzerPartial(
+	transformedBody []byte,
+	format string,
+	reasoningContent string,
+	phase1Content string,
+) (*AntiLoopAnalysis, error) {
+	analysisBody, err := buildAnalyzerRequestPartial(transformedBody, format, reasoningContent, phase1Content)
+	if err != nil {
+		return nil, fmt.Errorf("build partial analyzer request: %w", err)
+	}
+	return s.callAntiLoopAnalyzerWith(analysisBody, "并行思维分析")
+}
+
+// callAntiLoopAnalyzerWith is the unified implementation for calling the analyzer
+// sub-agent.  pathLabel distinguishes the two call sites in log entries.
+func (s *ProxyServer) callAntiLoopAnalyzerWith(analysisBody []byte, pathLabel string) (*AntiLoopAnalysis, error) {
+	startTime := time.Now()
 
 	upstreamURL := s.config.OpenAIUpstream + "/chat/completions"
 
@@ -443,16 +502,15 @@ func (s *ProxyServer) callAntiLoopAnalyzer(transformedBody []byte, format string
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+s.config.APIKey)
 
-	client := &http.Client{Timeout: 15 * time.Second}
+	client := &http.Client{Timeout: analyzerTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
-		// Log failed analyzer call
 		s.logger.Add(LogEntry{
 			Time:        startTime,
 			Format:      "openai",
 			RequestType: "antiloop_analyzer",
 			Method:      "POST",
-			Path:        "/chat/completions (思维分析)",
+			Path:        "/chat/completions (" + pathLabel + ")",
 			StatusCode:  502,
 			LatencyMs:   time.Since(startTime).Milliseconds(),
 		})
@@ -467,20 +525,20 @@ func (s *ProxyServer) callAntiLoopAnalyzer(transformedBody []byte, format string
 			Format:      "openai",
 			RequestType: "antiloop_analyzer",
 			Method:      "POST",
-			Path:        "/chat/completions (思维分析)",
+			Path:        "/chat/completions (" + pathLabel + ")",
 			StatusCode:  resp.StatusCode,
 			LatencyMs:   time.Since(startTime).Milliseconds(),
 		})
 		return nil, fmt.Errorf("read analyzer response: %w", err)
 	}
 
-	// ── Log the analyzer call ──
+	// Log the analyzer call
 	analyzerLogID := s.logger.Add(LogEntry{
 		Time:        startTime,
 		Format:      "openai",
 		RequestType: "antiloop_analyzer",
 		Method:      "POST",
-		Path:        "/chat/completions (思维分析)",
+		Path:        "/chat/completions (" + pathLabel + ")",
 		StatusCode:  resp.StatusCode,
 		LatencyMs:   time.Since(startTime).Milliseconds(),
 		OriginalBody:    condStr(s.config.VerboseLogging, truncateBody(string(analysisBody)), ""),
@@ -533,174 +591,18 @@ func (s *ProxyServer) callAntiLoopAnalyzer(transformedBody []byte, format string
 	return &analysis, nil
 }
 
-// parallelAnalyze is called from a goroutine to analyze the in-progress thinking.
-// It sends the result (or error) to the provided channel.
-func (s *ProxyServer) parallelAnalyze(
-	done chan<- analyzeResult,
-	transformedBody []byte,
-	format string,
-	reasoningSnapshot string,
-	phase1Content string,
-) {
-	analysis, err := s.callAntiLoopAnalyzerPartial(transformedBody, format, reasoningSnapshot, phase1Content)
-	done <- analyzeResult{analysis, err}
-}
-
-// callAntiLoopAnalyzerPartial is like callAntiLoopAnalyzer but uses a different
-// prompt optimized for IN-PROGRESS thinking detection (not truncated).
-func (s *ProxyServer) callAntiLoopAnalyzerPartial(
-	transformedBody []byte,
-	format string,
-	reasoningContent string,
-	phase1Content string,
-) (*AntiLoopAnalysis, error) {
-	startTime := time.Now()
-
-	analysisBody, err := buildAnalyzerRequestPartial(transformedBody, format, reasoningContent, phase1Content)
-	if err != nil {
-		return nil, fmt.Errorf("build partial analyzer request: %w", err)
-	}
-
-	upstreamURL := s.config.OpenAIUpstream + "/chat/completions"
-
-	req, err := http.NewRequest("POST", upstreamURL, bytes.NewReader(analysisBody))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+s.config.APIKey)
-
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		s.logger.Add(LogEntry{
-			Time:        startTime,
-			Format:      "openai",
-			RequestType: "antiloop_analyzer",
-			Method:      "POST",
-			Path:        "/chat/completions (并行思维分析)",
-			StatusCode:  502,
-			LatencyMs:   time.Since(startTime).Milliseconds(),
-		})
-		return nil, fmt.Errorf("partial analyzer API call: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read partial analyzer response: %w", err)
-	}
-
-	var oaiResp map[string]interface{}
-	if err := json.Unmarshal(respBytes, &oaiResp); err != nil {
-		return nil, fmt.Errorf("parse partial analyzer response: %w", err)
-	}
-
-	// Log the analyzer call
-	analyzerLogID := s.logger.Add(LogEntry{
-		Time:        startTime,
-		Format:      "openai",
-		RequestType: "antiloop_analyzer",
-		Method:      "POST",
-		Path:        "/chat/completions (并行思维分析)",
-		StatusCode:  resp.StatusCode,
-		LatencyMs:   time.Since(startTime).Milliseconds(),
-		OriginalBody:    condStr(s.config.VerboseLogging, truncateBody(string(analysisBody)), ""),
-		ResponseBody:    condStr(s.config.VerboseLogging, truncateBody(string(respBytes)), ""),
-	})
-	if u := parseUsageFromMap(oaiResp); u != nil {
-		s.logger.UpdateTokenUsage(analyzerLogID, u)
-	}
-
-	choices, ok := oaiResp["choices"].([]interface{})
-	if !ok || len(choices) == 0 {
-		return nil, fmt.Errorf("no choices in partial analyzer response")
-	}
-	choice, ok := choices[0].(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("invalid choice format")
-	}
-	message, ok := choice["message"].(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("no message in partial analyzer choice")
-	}
-	content, _ := message["content"].(string)
-	if content == "" {
-		return nil, fmt.Errorf("empty partial analyzer response")
-	}
-
-	content = strings.TrimSpace(content)
-	content = strings.TrimPrefix(content, "```json")
-	content = strings.TrimPrefix(content, "```")
-	content = strings.TrimSuffix(content, "```")
-	content = strings.TrimSpace(content)
-
-	var analysis AntiLoopAnalysis
-	if err := json.Unmarshal([]byte(content), &analysis); err != nil {
-		return nil, fmt.Errorf("parse partial analysis JSON: %w (content: %s)", err, truncateBody(content))
-	}
-
-	return &analysis, nil
-}
-
 // buildAnalyzerRequest creates the request body for the sub-agent analyzer.
 func buildAnalyzerRequest(transformedBody []byte, format string, reasoningContent string) ([]byte, error) {
-	var original map[string]interface{}
-	if err := json.Unmarshal(transformedBody, &original); err != nil {
-		return nil, err
-	}
-
-	var messages []interface{}
-	if msgs, ok := original["messages"].([]interface{}); ok {
-		messages = msgs
-	} else {
-		messages = []interface{}{
-			map[string]interface{}{
-				"role":    "user",
-				"content": fmt.Sprintf("Original request (Anthropic format):\n%s", string(transformedBody)),
-			},
-		}
-	}
-
-	messagesJSON, _ := json.MarshalIndent(messages, "", "  ")
-
-	truncatedReasoning := reasoningContent
-	const maxReasoningLen = 8000
-	if len(truncatedReasoning) > maxReasoningLen {
-		half := maxReasoningLen / 2
-		truncatedReasoning = truncatedReasoning[:half] + "\n\n... [中间省略] ...\n\n" + truncatedReasoning[len(truncatedReasoning)-half:]
-	}
-
-	userContent := fmt.Sprintf(`## 完整对话上下文
-%s
-
-## 被截断的思考过程 (reasoning_content)
-%s
-
-请分析上述思考过程是否陷入死循环或过度推理，并返回 JSON 结果。`, string(messagesJSON), truncatedReasoning)
-
-	analyzerReq := map[string]interface{}{
-		"model": "deepseek-chat",
-		"messages": []map[string]interface{}{
-			{
-				"role":    "system",
-				"content": antiLoopAnalyzerPrompt,
-			},
-			{
-				"role":    "user",
-				"content": userContent,
-			},
-		},
-		"max_tokens":      1024,
-		"response_format": map[string]interface{}{"type": "json_object"},
-		"thinking":        map[string]interface{}{"type": "disabled"},
-	}
-
-	return json.Marshal(analyzerReq)
+	return buildAnalyzerRequestWith(transformedBody, reasoningContent, "", antiLoopAnalyzerPrompt, 8000)
 }
 
 // buildAnalyzerRequestPartial creates the request body for the parallel (in-progress) analyzer.
 func buildAnalyzerRequestPartial(transformedBody []byte, format string, reasoningContent string, phase1Content string) ([]byte, error) {
+	return buildAnalyzerRequestWith(transformedBody, reasoningContent, phase1Content, antiLoopAnalyzerPartialPrompt, 6000)
+}
+
+// buildAnalyzerRequestWith is the unified implementation for both analyzer variants.
+func buildAnalyzerRequestWith(transformedBody []byte, reasoningContent, phase1Content, prompt string, maxReasoningLen int) ([]byte, error) {
 	var original map[string]interface{}
 	if err := json.Unmarshal(transformedBody, &original); err != nil {
 		return nil, err
@@ -721,13 +623,14 @@ func buildAnalyzerRequestPartial(transformedBody []byte, format string, reasonin
 	messagesJSON, _ := json.MarshalIndent(messages, "", "  ")
 
 	truncatedReasoning := reasoningContent
-	const maxReasoningLen = 6000
 	if len(truncatedReasoning) > maxReasoningLen {
 		half := maxReasoningLen / 2
 		truncatedReasoning = truncatedReasoning[:half] + "\n\n... [中间省略] ...\n\n" + truncatedReasoning[len(truncatedReasoning)-half:]
 	}
 
-	userContent := fmt.Sprintf(`## 完整对话上下文
+	var userContent string
+	if phase1Content != "" {
+		userContent = fmt.Sprintf(`## 完整对话上下文
 %s
 
 ## 当前已输出的内容（部分）
@@ -737,20 +640,29 @@ func buildAnalyzerRequestPartial(transformedBody []byte, format string, reasonin
 %s
 
 请分析上述思考过程是否已出现循环迹象或过度推理，并返回 JSON 结果。`, string(messagesJSON), truncateBody(phase1Content), truncatedReasoning)
+	} else {
+		userContent = fmt.Sprintf(`## 完整对话上下文
+%s
+
+## 被截断的思考过程 (reasoning_content)
+%s
+
+请分析上述思考过程是否陷入死循环或过度推理，并返回 JSON 结果。`, string(messagesJSON), truncatedReasoning)
+	}
 
 	analyzerReq := map[string]interface{}{
 		"model": "deepseek-chat",
 		"messages": []map[string]interface{}{
 			{
 				"role":    "system",
-				"content": antiLoopAnalyzerPartialPrompt,
+				"content": prompt,
 			},
 			{
 				"role":    "user",
 				"content": userContent,
 			},
 		},
-		"max_tokens":      1024,
+		"max_tokens":      analyzerMaxTokens,
 		"response_format": map[string]interface{}{"type": "json_object"},
 		"thinking":        map[string]interface{}{"type": "disabled"},
 	}
@@ -850,7 +762,7 @@ func (s *ProxyServer) injectRetryContext(data map[string]interface{}, format str
 	// Include condensed reasoning summary (max 3000 chars)
 	if len(reasoningContent) > 0 {
 		summary := reasoningContent
-		const maxSummary = 3000
+		const maxSummary = reasoningSummaryLen
 		if len(summary) > maxSummary {
 			half := maxSummary / 2
 			summary = summary[:half] + "\n\n... [中间省略] ...\n\n" + summary[len(summary)-half:]
@@ -900,50 +812,6 @@ func (s *ProxyServer) buildSimpleRetryRequest(transformedBody []byte, format str
 		return transformedBody
 	}
 	return b
-}
-
-// injectIntoLastUserMessage appends text to the last user-role message in the messages array.
-func injectIntoLastUserMessage(data map[string]interface{}, text string) {
-	messagesRaw, ok := data["messages"]
-	if !ok {
-		return
-	}
-	messages, ok := messagesRaw.([]interface{})
-	if !ok || len(messages) == 0 {
-		return
-	}
-
-	// Find last user message
-	lastUserIdx := -1
-	for i := len(messages) - 1; i >= 0; i-- {
-		if msg, ok := messages[i].(map[string]interface{}); ok {
-			if role, _ := msg["role"].(string); role == "user" {
-				lastUserIdx = i
-				break
-			}
-		}
-	}
-
-	if lastUserIdx < 0 {
-		return
-	}
-
-	userMsg, ok := messages[lastUserIdx].(map[string]interface{})
-	if !ok {
-		return
-	}
-
-	// Append to string content
-	if content, ok := userMsg["content"].(string); ok {
-		userMsg["content"] = content + text
-	} else if contentBlocks, ok := userMsg["content"].([]interface{}); ok {
-		// Anthropic content array format
-		contentBlocks = append(contentBlocks, map[string]interface{}{
-			"type": "text",
-			"text": text,
-		})
-		userMsg["content"] = contentBlocks
-	}
 }
 
 // executeRetry sends the retry request to the upstream API and returns the

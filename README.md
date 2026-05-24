@@ -41,7 +41,7 @@ DSPlus 是一个本地运行的轻量级 API 中转代理，专为解决 DeepSee
 | 格式 | 识别特征 | 转发目标 |
 |------|---------|---------|
 | OpenAI | `messages` 数组含 `role: "system"` | `https://api.deepseek.com` |
-| Anthropic | 顶层 `system` 字段 | `https://api.deepseek.com/anthropic` |
+| Anthropic | 顶层 `system` 字段 或 含 `max_tokens` 且无系统 role | `https://api.deepseek.com/anthropic` |
 
 ## 项目结构
 
@@ -71,9 +71,9 @@ DSPlus/
 | 文件 | 关键类型/函数 | 说明 |
 |------|-------------|------|
 | `config.go` | `Config`, `LoadConfig()`, `SaveConfig()` | 配置 JSON 持久化，自动放在 exe 同目录 |
-| `transform.go` | `transformOpenAI()`, `transformAnthropic()` | 将 system prompt 拼入首条 user message |
-| `proxy.go` | `ProxyServer`, `forwardStreamWithAntiLoop()`, `injectMaxTokens()` | HTTP 代理 + 防循环流引擎 + 参数注入 |
-| `retry.go` | `AntiLoopAnalysis`, `callAntiLoopAnalyzer()`, `parallelAnalyze()`, `executeAndStreamRetry()` | 子Agent分析、并行检测、重试执行 |
+| `transform.go` | `transformOpenAIInPlace()`, `transformAnthropicInPlace()` | 将 system prompt 拼入首条 user message |
+| `proxy.go` | `ProxyServer`, `forwardStreamWithAntiLoop()`, `injectThinkingParams()`, `injectMaxTokens()` | HTTP 代理 + 防循环流引擎 + 参数注入 |
+| `retry.go` | `AntiLoopAnalysis`, `callAntiLoopAnalyzerWith()`, `parallelAnalyze()`, `executeAndStreamRetry()` | 子Agent分析、并行检测、重试执行 |
 | `logger.go` | `Logger`, `LogEntry`, `TokenUsage`, `UpdateTokenUsage()` | 内存环形缓冲日志，WS 广播 |
 | `trace.go` | `trace()`, `traceKeyvals()`, `tracelog()` | 文件追踪日志，自动双写到控制台+antiloop_trace.log |
 | `gui.go` | `handleGUI`, REST API 处理器 | 前端服务 + 配置 API |
@@ -314,18 +314,18 @@ go build -ldflags="-H windowsgui -s -w" -o DSPlus.exe .
 | 监听端口 | 8188 | 修改后需重启 |
 | OpenAI 上游 | `https://api.deepseek.com` | OpenAI 格式转发目标 |
 | Anthropic 上游 | `https://api.deepseek.com/anthropic` | Anthropic 格式转发目标 |
-| 思考模式 | 不设置 | 强制关闭 / 强制启动 / 不设置 |
-| 思考强度 | high | 仅在强制启动时生效 |
+| 思考模式 | 强制启动思考 | 强制关闭 / 强制启动 / 不设置 |
+| 思考强度 | max | 仅在强制启动时生效 |
 | Max Tokens | 不修改 | 不修改 / 5000 / 32000 / 自定义 |
 | 拼接位置 | 第一条用户消息后 | 第一条后 / 最后一条后 / 不修改 |
-| 额外 Prompt 位置 | 不添加 | 不添加 / 第一条后 / 最后一条后 |
-| 额外 Prompt | 空 | 最高优先级指令 |
+| 额外 Prompt 位置 | 最后一条后 | 不添加 / 第一条后 / 最后一条后 |
+| 额外 Prompt | 内置 Prompt | 最高优先级指令（首次启动自动填充） |
 | **防思维循环** | 关闭 | 总开关 |
 | ├ 重试模型 | `deepseek-v4-flash` | 重试时使用 |
 | ├ 重试时启用思考 | 不启用 | 重试思考开关 |
 | ├ 重试思考强度 | high | 启用时生效 |
 | └ 检测触发Token数 | 0 | 主动检测阈值 |
-| 详细记录 | 关闭 | 完整记录请求/响应体 |
+| 详细记录 | 开启 | 完整记录请求/响应体 |
 | Debug 模式 | 关闭 | 实时 Token 追踪数据 |
 | 启动时打开 GUI | 开启 | 可关闭以纯服务模式运行 |
 
@@ -347,9 +347,10 @@ DSPlus 单端口复用，同时提供代理和 GUI 服务：
 
 ### 格式检测规则
 
-代理通过检查请求体自动判断格式：
+代理通过结构化解析请求体自动判断格式：
 
-- 包含 `"messages"` 且包含 `"max_tokens"` 但不含 `"role":"system"` → **Anthropic 格式**
+- 包含顶层 `"system"` 字段 → **Anthropic 格式**（优先）
+- 包含 `"messages"` 且含 `"max_tokens"` 但不含 `role:"system"` → **Anthropic 格式**
 - 包含 `"messages"` 且不满足上述条件 → **OpenAI 格式**
 - 不满足以上 → 直接透传
 
@@ -363,13 +364,13 @@ DSPlus 单端口复用，同时提供代理和 GUI 服务：
   "port": 8188,
   "openai_upstream": "https://api.deepseek.com",
   "anthropic_upstream": "https://api.deepseek.com/anthropic",
-  "verbose_logging": false,
+  "verbose_logging": true,
   "auto_open_gui": true,
-  "thinking_mode": "",
-  "reasoning_effort": "high",
+  "thinking_mode": "enabled",
+  "reasoning_effort": "max",
   "system_prompt_placement": "first",
-  "extra_prompt": "",
-  "extra_prompt_placement": "none",
+  "extra_prompt": "# 在你的思考过程（<think>标签内）中，请遵守以下规则：\n...",
+  "extra_prompt_placement": "last",
   "max_tokens_mode": "",
   "max_tokens_custom": 0,
   "anti_loop_enabled": false,
@@ -387,13 +388,13 @@ DSPlus 单端口复用，同时提供代理和 GUI 服务：
 | `port` | int | 8188 | 监听端口 |
 | `openai_upstream` | string | `https://api.deepseek.com` | OpenAI 格式上游 |
 | `anthropic_upstream` | string | `https://api.deepseek.com/anthropic` | Anthropic 格式上游 |
-| `verbose_logging` | bool | false | 完整记录请求/响应体 |
+| `verbose_logging` | bool | true | 完整记录请求/响应体 |
 | `auto_open_gui` | bool | true | 启动时打开 GUI |
-| `thinking_mode` | string | `""` | `""` / `"disabled"` / `"enabled"` |
-| `reasoning_effort` | string | `"high"` | `"high"` / `"max"` |
+| `thinking_mode` | string | `"enabled"` | `""` / `"disabled"` / `"enabled"` |
+| `reasoning_effort` | string | `"max"` | `"high"` / `"max"` |
 | `system_prompt_placement` | string | `"first"` | `"first"` / `"last"` / `"none"` |
-| `extra_prompt` | string | `""` | 额外最高优先级指令 |
-| `extra_prompt_placement` | string | `"none"` | `"first"` / `"last"` / `"none"` |
+| `extra_prompt` | string | 内置 Prompt | 额外最高优先级指令 |
+| `extra_prompt_placement` | string | `"last"` | `"first"` / `"last"` / `"none"` |
 | `max_tokens_mode` | string | `""` | `""` / `"5000"` / `"32000"` / `"custom"` |
 | `max_tokens_custom` | int | 0 | 自定义 max_tokens 值 |
 | `anti_loop_enabled` | bool | false | 防思维循环总开关 |

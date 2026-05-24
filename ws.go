@@ -19,19 +19,20 @@ type wsHub struct {
 }
 
 var hub *wsHub
+var hubOnce sync.Once
 
 func initWSHub(l *Logger) {
-	hub = &wsHub{
-		clients: make(map[*websocket.Conn]bool),
-		logger:  l,
-	}
-	go hub.broadcastLoop()
+	hubOnce.Do(func() {
+		hub = &wsHub{
+			clients: make(map[*websocket.Conn]bool),
+			logger:  l,
+		}
+		go hub.broadcastLoop()
+	})
 }
 
 func handleWebSocket(w http.ResponseWriter, r *http.Request, l *Logger) {
-	if hub == nil || hub.logger != l {
-		initWSHub(l)
-	}
+	initWSHub(l)
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {

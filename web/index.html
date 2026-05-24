@@ -263,6 +263,16 @@ main { flex: 1; overflow: auto; }
       </div>
       <div class="toggle-row">
         <div>
+          <div class="toggle-label">reasoning_content 自动补全</div>
+          <div class="toggle-desc">对含 tool_calls 但缺 reasoning_content 的 assistant 消息自动注入空字符串，避免 DeepSeek V4 抛出 missing reasoning_content 错误</div>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="cfgAutoReasoning" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="toggle-row">
+        <div>
           <div class="toggle-label">防思维循环</div>
           <div class="toggle-desc">检测到输出被截断（finish_reason=length）时，自动分析思维过程并重试</div>
         </div>
@@ -643,6 +653,7 @@ async function loadSettings() {
     $('antiloopEffortGroup').style.display = cfg.antiloop_retry_thinking === 'enabled' ? '' : 'none';
     $('cfgAntiloopCheckTokens').value = cfg.antiloop_check_tokens || 0;
     $('cfgDebugMode').checked = cfg.debug_mode || false;
+    $('cfgAutoReasoning').checked = cfg.auto_reasoning_content !== false;
   } catch(e) {
     showToast('加载配置失败', true);
   }
@@ -669,6 +680,7 @@ async function saveSettings() {
     antiloop_retry_effort: $('cfgAntiloopRetryEffort').value,
     antiloop_check_tokens: parseInt($('cfgAntiloopCheckTokens').value) || 0,
     debug_mode: $('cfgDebugMode').checked,
+    auto_reasoning_content: $('cfgAutoReasoning').checked,
   };
 
   try {
@@ -713,6 +725,7 @@ function resetSettings() {
   $('antiloopEffortGroup').style.display = 'none';
   $('cfgAntiloopCheckTokens').value = 0;
   $('cfgDebugMode').checked = false;
+  $('cfgAutoReasoning').checked = true;
 }
 
 function showToast(msg, isError) {

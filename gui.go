@@ -11,15 +11,9 @@ import (
 //go:embed web/index.html
 var indexHTML []byte
 
-var (
-	currentLogger *Logger
-	currentConfig *Config
-)
+// All state passed via parameters; no package-level globals needed.
 
 func handleGUI(w http.ResponseWriter, r *http.Request, l *Logger, cfg *Config) {
-	currentLogger = l
-	currentConfig = cfg
-
 	if r.URL.Path == "/" || r.URL.Path == "/index.html" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(indexHTML)
@@ -40,7 +34,7 @@ func handleGUI(w http.ResponseWriter, r *http.Request, l *Logger, cfg *Config) {
 
 	switch {
 	case path == "/status":
-		handleAPIStatus(w, r, l)
+		handleAPIStatus(w, r, l, cfg)
 	case path == "/logs" && r.Method == "DELETE":
 		l.Clear()
 		json.NewEncoder(w).Encode(map[string]string{"status": "cleared"})
@@ -57,10 +51,10 @@ func handleGUI(w http.ResponseWriter, r *http.Request, l *Logger, cfg *Config) {
 	}
 }
 
-func handleAPIStatus(w http.ResponseWriter, r *http.Request, l *Logger) {
+func handleAPIStatus(w http.ResponseWriter, r *http.Request, l *Logger, cfg *Config) {
 	stats := l.Stats()
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"port":     currentConfig.Port,
+		"port":     cfg.Port,
 		"total":    stats["total"],
 		"today":    stats["today"],
 		"max_logs": l.maxSize,
@@ -122,18 +116,22 @@ func handleAPISaveConfig(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	}
 
 	changed := false
+
+	// API key: special handling for masked value comparison.
 	if v, ok := updates["api_key"]; ok {
 		if s, ok := v.(string); ok && s != "" && s != maskAPIKey(cfg.APIKey) {
 			cfg.APIKey = s
 			changed = true
 		}
 	}
+	// Port: must be in valid range.
 	if v, ok := updates["port"]; ok {
 		if f, ok := v.(float64); ok && f > 0 && f < 65536 {
 			cfg.Port = int(f)
 			changed = true
 		}
 	}
+	// Upstreams: trim trailing slashes.
 	if v, ok := updates["openai_upstream"]; ok {
 		if s, ok := v.(string); ok && s != "" {
 			cfg.OpenAIUpstream = strings.TrimRight(s, "/")
@@ -146,96 +144,24 @@ func handleAPISaveConfig(w http.ResponseWriter, r *http.Request, cfg *Config) {
 			changed = true
 		}
 	}
-	if v, ok := updates["verbose_logging"]; ok {
-		if b, ok := v.(bool); ok {
-			cfg.VerboseLogging = b
-			changed = true
-		}
-	}
-	if v, ok := updates["auto_open_gui"]; ok {
-		if b, ok := v.(bool); ok {
-			cfg.AutoOpenGUI = b
-			changed = true
-		}
-	}
-	if v, ok := updates["thinking_mode"]; ok {
-		if s, ok := v.(string); ok {
-			cfg.ThinkingMode = s
-			changed = true
-		}
-	}
-	if v, ok := updates["reasoning_effort"]; ok {
-		if s, ok := v.(string); ok {
-			cfg.ReasoningEffort = s
-			changed = true
-		}
-	}
-	if v, ok := updates["system_prompt_placement"]; ok {
-		if s, ok := v.(string); ok {
-			cfg.SystemPromptPlacement = s
-			changed = true
-		}
-	}
-	if v, ok := updates["extra_prompt"]; ok {
-		if s, ok := v.(string); ok {
-			cfg.ExtraPrompt = s
-			changed = true
-		}
-	}
-	if v, ok := updates["extra_prompt_placement"]; ok {
-		if s, ok := v.(string); ok {
-			cfg.ExtraPromptPlacement = s
-			changed = true
-		}
-	}
-	if v, ok := updates["max_tokens_mode"]; ok {
-		if s, ok := v.(string); ok {
-			cfg.MaxTokensMode = s
-			changed = true
-		}
-	}
-	if v, ok := updates["max_tokens_custom"]; ok {
-		if f, ok := v.(float64); ok && f >= 0 {
-			cfg.MaxTokensCustom = int(f)
-			changed = true
-		}
-	}
-	if v, ok := updates["anti_loop_enabled"]; ok {
-		if b, ok := v.(bool); ok {
-			cfg.AntiLoopEnabled = b
-			changed = true
-		}
-	}
-	if v, ok := updates["antiloop_retry_model"]; ok {
-		if s, ok := v.(string); ok {
-			cfg.AntiLoopRetryModel = s
-			changed = true
-		}
-	}
-	if v, ok := updates["antiloop_retry_thinking"]; ok {
-		if s, ok := v.(string); ok {
-			cfg.AntiLoopRetryThinking = s
-			changed = true
-		}
-	}
-	if v, ok := updates["antiloop_retry_effort"]; ok {
-		if s, ok := v.(string); ok {
-			cfg.AntiLoopRetryEffort = s
-			changed = true
-		}
-	}
-	if v, ok := updates["antiloop_check_tokens"]; ok {
-		if f, ok := v.(float64); ok && f >= 0 {
-			cfg.AntiLoopCheckTokens = int(f)
-			changed = true
-		}
-	}
-	if v, ok := updates["debug_mode"]; ok {
-		if b, ok := v.(bool); ok {
-			cfg.DebugMode = b
-			changed = true
-		}
-	}
+
+	// The remaining fields follow a simple pattern.
+	changed = setStringField(updates, "thinking_mode", &cfg.ThinkingMode) || changed
+	changed = setStringField(updates, "reasoning_effort", &cfg.ReasoningEffort) || changed
+	changed = setStringField(updates, "system_prompt_placement", &cfg.SystemPromptPlacement) || changed
+	changed = setStringField(updates, "extra_prompt", &cfg.ExtraPrompt) || changed
+	changed = setStringField(updates, "extra_prompt_placement", &cfg.ExtraPromptPlacement) || changed
+	changed = setStringField(updates, "max_tokens_mode", &cfg.MaxTokensMode) || changed
+	changed = setStringField(updates, "antiloop_retry_model", &cfg.AntiLoopRetryModel) || changed
+	changed = setStringField(updates, "antiloop_retry_thinking", &cfg.AntiLoopRetryThinking) || changed
+	changed = setStringField(updates, "antiloop_retry_effort", &cfg.AntiLoopRetryEffort) || changed
+	changed = setBoolField(updates, "verbose_logging", &cfg.VerboseLogging) || changed
+	changed = setBoolField(updates, "auto_open_gui", &cfg.AutoOpenGUI) || changed
+	changed = setBoolField(updates, "anti_loop_enabled", &cfg.AntiLoopEnabled) || changed
+	changed = setBoolField(updates, "debug_mode", &cfg.DebugMode) || changed
+	changed = setBoolField(updates, "auto_reasoning_content", &cfg.AutoReasoningContent) || changed
+	changed = setIntField(updates, "max_tokens_custom", &cfg.MaxTokensCustom, 0) || changed
+	changed = setIntField(updates, "antiloop_check_tokens", &cfg.AntiLoopCheckTokens, 0) || changed
 
 	if changed {
 		if err := SaveConfig(*cfg); err != nil {
@@ -246,6 +172,51 @@ func handleAPISaveConfig(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	} else {
 		json.NewEncoder(w).Encode(map[string]string{"status": "unchanged"})
 	}
+}
+
+// ── Config field update helpers ────────────────────────────────────────────
+
+func setStringField(updates map[string]interface{}, key string, dest *string) bool {
+	v, ok := updates[key]
+	if !ok {
+		return false
+	}
+	s, ok := v.(string)
+	if !ok {
+		return false
+	}
+	*dest = s
+	return true
+}
+
+func setBoolField(updates map[string]interface{}, key string, dest *bool) bool {
+	v, ok := updates[key]
+	if !ok {
+		return false
+	}
+	b, ok := v.(bool)
+	if !ok {
+		return false
+	}
+	*dest = b
+	return true
+}
+
+func setIntField(updates map[string]interface{}, key string, dest *int, min int) bool {
+	v, ok := updates[key]
+	if !ok {
+		return false
+	}
+	f, ok := v.(float64) // JSON numbers unmarshal as float64
+	if !ok {
+		return false
+	}
+	val := int(f)
+	if val < min {
+		return false
+	}
+	*dest = val
+	return true
 }
 
 func maskAPIKey(key string) string {

@@ -26,6 +26,7 @@ type Config struct {
 	AntiLoopRetryEffort    string `json:"antiloop_retry_effort"`
 	AntiLoopCheckTokens    int    `json:"antiloop_check_tokens"`
 	DebugMode              bool   `json:"debug_mode"`
+	AutoReasoningContent   bool   `json:"auto_reasoning_content"`
 }
 
 func DefaultConfig() Config {
@@ -44,6 +45,7 @@ func DefaultConfig() Config {
 		AntiLoopRetryThinking: "",
 		AntiLoopRetryEffort:   "high",
 		AntiLoopCheckTokens:   0,
+		AutoReasoningContent:  true,
 	}
 }
 

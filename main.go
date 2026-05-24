@@ -31,8 +31,6 @@ func main() {
 	}
 
 	logger := NewLogger(2000)
-	currentConfig = &cfg
-	currentLogger = logger
 
 	proxy := NewProxyServer(&cfg, logger)
 	initWSHub(logger)
