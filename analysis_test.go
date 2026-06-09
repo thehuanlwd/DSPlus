@@ -42,8 +42,7 @@ func TestBuildRequestMeta(t *testing.T) {
 func TestSessionInference(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.AnalysisEnabled = true
-	cfg.AnalysisSessionGapMin = 5
-	svc := InitAnalysisService(&cfg)
+	svc := InitAnalysisService(NewSafeConfig(cfg))
 
 	now := time.Now()
 	

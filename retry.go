@@ -148,32 +148,12 @@ func detectStreamFinishReason(buf []byte) (finishReason string, reasoningContent
 	var reasoningBuilder strings.Builder
 
 	for _, line := range lines {
-		if !strings.HasPrefix(line, "data: ") {
-			continue
-		}
-		data := strings.TrimPrefix(line, "data: ")
-		if data == "[DONE]" {
-			continue
-		}
-		var chunk map[string]interface{}
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue
-		}
-
-		// Extract finish_reason from choices
-		if choices, ok := chunk["choices"].([]interface{}); ok {
-			for _, c := range choices {
-				if choice, ok := c.(map[string]interface{}); ok {
-					if fr, ok := choice["finish_reason"].(string); ok && fr != "" {
-						finishReason = fr
-					}
-					// Accumulate reasoning_content from delta
-					if delta, ok := choice["delta"].(map[string]interface{}); ok {
-						if rc, ok := delta["reasoning_content"].(string); ok {
-							reasoningBuilder.WriteString(rc)
-						}
-					}
-				}
+		if delta, err := ParseSSELine(line); err == nil && delta != nil {
+			if delta.FinishReason != "" {
+				finishReason = delta.FinishReason
+			}
+			if delta.ReasoningContent != "" {
+				reasoningBuilder.WriteString(delta.ReasoningContent)
 			}
 		}
 	}
@@ -267,9 +247,6 @@ func (s *ProxyServer) writeAntiloopIndicator(w http.ResponseWriter, flusher http
 	}
 }
 
-// executeAndStreamRetry makes the retry API call and streams the SSE response
-// chunks directly to the client writer, overriding the chunk id with streamID
-// for continuity with Phase 1. Returns the finish_reason and token usage.
 func (s *ProxyServer) executeAndStreamRetry(
 	w http.ResponseWriter,
 	flusher http.Flusher,
@@ -281,6 +258,7 @@ func (s *ProxyServer) executeAndStreamRetry(
 ) (string, *TokenUsage) {
 	startTime := time.Now()
 	reqID := nextTraceReqID()
+	cfg := s.config.Get()
 
 	// Always log that retry was attempted (before the call)
 	log.Printf("[antiloop] retry attempt: reqID=%d format=%s streamID=%s body_bytes=%d", reqID, format, streamID, len(body))
@@ -297,7 +275,7 @@ func (s *ProxyServer) executeAndStreamRetry(
 			Path:        "/chat/completions (防循环重试-stream)",
 			StatusCode:  502,
 			LatencyMs:   time.Since(startTime).Milliseconds(),
-			OriginalBody:    condStr(s.config.VerboseLogging, truncateBody(string(body)), ""),
+			OriginalBody:    condStr(cfg.VerboseLogging, truncateBody(string(body)), ""),
 		})
 		return "", nil
 	}
@@ -335,32 +313,17 @@ func (s *ProxyServer) executeAndStreamRetry(
 		line := scanner.Text()
 		line = replaceDSMLMarkers(line)
 
-		if strings.HasPrefix(line, "data: ") {
-			data := strings.TrimPrefix(line, "data: ")
-			if data == "[DONE]" {
-				continue
+		if delta, err := ParseSSELine(line); err == nil && delta != nil {
+			delta.RawChunk["id"] = streamID
+			if delta.FinishReason != "" {
+				finishReason = delta.FinishReason
 			}
-			var chunk map[string]interface{}
-			if json.Unmarshal([]byte(data), &chunk) == nil {
-				// Override id to match Phase 1 for stream continuity
-				chunk["id"] = streamID
-
-				if choices, ok := chunk["choices"].([]interface{}); ok {
-					for _, c := range choices {
-						if choice, ok := c.(map[string]interface{}); ok {
-							if fr, _ := choice["finish_reason"].(string); fr != "" {
-								finishReason = fr
-							}
-						}
-					}
-				}
-				if u := parseUsageFromMap(chunk); u != nil {
-					lastUsage = u
-				}
-
-				b, _ := json.Marshal(chunk)
-				line = "data: " + string(b)
+			if delta.Usage != nil {
+				lastUsage = delta.Usage
 			}
+
+			b, _ := json.Marshal(delta.RawChunk)
+			line = "data: " + string(b)
 		}
 
 		if _, err := w.Write([]byte(line + "\n")); err != nil {
@@ -397,8 +360,8 @@ func (s *ProxyServer) executeAndStreamRetry(
 		Path:        "/chat/completions (防循环重试-stream)",
 		StatusCode:  retryResp.StatusCode,
 		LatencyMs:   time.Since(startTime).Milliseconds(),
-		OriginalBody:    condStr(s.config.VerboseLogging, truncateBody(string(body)), ""),
-		ResponseBody:    condStr(s.config.VerboseLogging, truncateBody(respCapture.String()), ""),
+		OriginalBody:    condStr(cfg.VerboseLogging, truncateBody(string(body)), ""),
+		ResponseBody:    condStr(cfg.VerboseLogging, truncateBody(respCapture.String()), ""),
 	})
 	log.Printf("[antiloop] retry logged: id=%d", retryLogID)
 	if lastUsage != nil {
@@ -438,10 +401,11 @@ func (s *ProxyServer) streamHardLimitSSE(w http.ResponseWriter, flusher http.Flu
 // executeRetryCall makes the retry HTTP request and returns the response for streaming.
 // Caller is responsible for closing resp.Body.
 func (s *ProxyServer) executeRetryCall(body []byte, format string) (*http.Response, error) {
-	upstream := s.config.OpenAIUpstream
+	cfg := s.config.Get()
+	upstream := cfg.OpenAIUpstream
 	path := "/chat/completions"
 	if format == "anthropic" {
-		upstream = s.config.AnthropicUpstream
+		upstream = cfg.AnthropicUpstream
 		path = "/v1/messages"
 	}
 
@@ -450,7 +414,7 @@ func (s *ProxyServer) executeRetryCall(body []byte, format string) (*http.Respon
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+s.config.APIKey)
+	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
 
 	return s.client.Do(req)
 }
@@ -494,15 +458,16 @@ func (s *ProxyServer) callAntiLoopAnalyzerPartial(
 // sub-agent.  pathLabel distinguishes the two call sites in log entries.
 func (s *ProxyServer) callAntiLoopAnalyzerWith(analysisBody []byte, pathLabel string) (*AntiLoopAnalysis, error) {
 	startTime := time.Now()
+	cfg := s.config.Get()
 
-	upstreamURL := s.config.OpenAIUpstream + "/chat/completions"
+	upstreamURL := cfg.OpenAIUpstream + "/chat/completions"
 
 	req, err := http.NewRequest("POST", upstreamURL, bytes.NewReader(analysisBody))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+s.config.APIKey)
+	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
 
 	client := &http.Client{Timeout: analyzerTimeout}
 	resp, err := client.Do(req)
@@ -543,8 +508,8 @@ func (s *ProxyServer) callAntiLoopAnalyzerWith(analysisBody []byte, pathLabel st
 		Path:        "/chat/completions (" + pathLabel + ")",
 		StatusCode:  resp.StatusCode,
 		LatencyMs:   time.Since(startTime).Milliseconds(),
-		OriginalBody:    condStr(s.config.VerboseLogging, truncateBody(string(analysisBody)), ""),
-		ResponseBody:    condStr(s.config.VerboseLogging, truncateBody(string(respBytes)), ""),
+		OriginalBody:    condStr(cfg.VerboseLogging, truncateBody(string(analysisBody)), ""),
+		ResponseBody:    condStr(cfg.VerboseLogging, truncateBody(string(respBytes)), ""),
 	})
 
 	// Parse OpenAI response
@@ -595,25 +560,28 @@ func (s *ProxyServer) callAntiLoopAnalyzerWith(analysisBody []byte, pathLabel st
 	var analyzerBody map[string]interface{}
 	json.Unmarshal(analysisBody, &analyzerBody)
 	
-	GetAnalysisService().SubmitEvent(&TraceEvent{
-		ID:        analyzerEventID,
-		Time:      startTime,
-		LogID:     analyzerLogID,
-		Phase:     "analyzer",
-		Format:    "openai",
-		Route:     "/chat/completions (" + pathLabel + ")",
-		Status:    resp.StatusCode,
-		LatencyMs: time.Since(startTime).Milliseconds(),
-		Model:     "deepseek-chat",
-		Upstream:  s.config.OpenAIUpstream,
-		Request:   buildRequestMeta(analyzerBody, "openai", false, false),
-		Response: ResponseMeta{
+	anaEv := NewTraceEvent(
+		startTime,
+		analyzerLogID,
+		"",
+		0,
+		"analyzer",
+		"openai",
+		"/chat/completions (" + pathLabel + ")",
+		resp.StatusCode,
+		time.Since(startTime).Milliseconds(),
+		"deepseek-chat",
+		cfg.OpenAIUpstream,
+		buildRequestMeta(analyzerBody, "openai", false, false),
+		ResponseMeta{
 			AnalyzerJudgment: analysis.Judgment,
 			FinishReason:     "stop",
 		},
-		RawRequest:  string(analysisBody),
-		RawResponse: string(respBytes),
-	})
+		string(analysisBody),
+		string(respBytes),
+	)
+	anaEv.ID = analyzerEventID
+	s.analysisSvc.SubmitEvent(anaEv)
 
 	return &analysis, nil
 }
@@ -705,8 +673,10 @@ func (s *ProxyServer) buildGuidedRetryRequest(transformedBody []byte, format str
 		return transformedBody
 	}
 
+	cfg := s.config.Get()
+
 	// 1. Replace model with configured retry model
-	data["model"] = s.config.AntiLoopRetryModel
+	data["model"] = cfg.AntiLoopRetryModel
 
 	// 2. Remove max_tokens to give full room for retry
 	delete(data, "max_tokens")
@@ -726,7 +696,8 @@ func (s *ProxyServer) buildGuidedRetryRequest(transformedBody []byte, format str
 
 // applyRetryThinking sets thinking/effort on the retry request based on config + analysis.
 func (s *ProxyServer) applyRetryThinking(data map[string]interface{}, analysis *AntiLoopAnalysis) {
-	mode := s.config.AntiLoopRetryThinking
+	cfg := s.config.Get()
+	mode := cfg.AntiLoopRetryThinking
 	if mode == "" {
 		// Not set: use analyzer's recommendation
 		if !analysis.EnableThinking {
@@ -742,7 +713,7 @@ func (s *ProxyServer) applyRetryThinking(data map[string]interface{}, analysis *
 		delete(data, "output_config")
 	} else if mode == "enabled" {
 		data["thinking"] = map[string]interface{}{"type": "enabled"}
-		data["reasoning_effort"] = s.config.AntiLoopRetryEffort
+		data["reasoning_effort"] = cfg.AntiLoopRetryEffort
 	}
 }
 
@@ -815,16 +786,18 @@ func (s *ProxyServer) buildSimpleRetryRequest(transformedBody []byte, format str
 		return transformedBody
 	}
 
+	cfg := s.config.Get()
+
 	// Replace model with configured retry model
-	data["model"] = s.config.AntiLoopRetryModel
+	data["model"] = cfg.AntiLoopRetryModel
 
 	// Remove max_tokens
 	delete(data, "max_tokens")
 
 	// Apply retry thinking config (disabled by default)
-	if s.config.AntiLoopRetryThinking == "enabled" {
+	if cfg.AntiLoopRetryThinking == "enabled" {
 		data["thinking"] = map[string]interface{}{"type": "enabled"}
-		data["reasoning_effort"] = s.config.AntiLoopRetryEffort
+		data["reasoning_effort"] = cfg.AntiLoopRetryEffort
 	} else {
 		data["thinking"] = map[string]interface{}{"type": "disabled"}
 		delete(data, "reasoning_effort")
@@ -845,11 +818,12 @@ func (s *ProxyServer) buildSimpleRetryRequest(transformedBody []byte, format str
 // full response body along with the finish_reason.
 func (s *ProxyServer) executeRetry(body []byte, format string) (responseBody []byte, finishReason string) {
 	startTime := time.Now()
+	cfg := s.config.Get()
 
-	upstream := s.config.OpenAIUpstream
+	upstream := cfg.OpenAIUpstream
 	path := "/chat/completions"
 	if format == "anthropic" {
-		upstream = s.config.AnthropicUpstream
+		upstream = cfg.AnthropicUpstream
 		path = "/v1/messages"
 	}
 
@@ -859,7 +833,7 @@ func (s *ProxyServer) executeRetry(body []byte, format string) (responseBody []b
 		return hardLimitMessages(format), "stop"
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+s.config.APIKey)
+	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
 
 	resp, err := s.client.Do(req)
 	if err != nil {
@@ -872,7 +846,7 @@ func (s *ProxyServer) executeRetry(body []byte, format string) (responseBody []b
 			Path:        path + " (防循环重试)",
 			StatusCode:  502,
 			LatencyMs:   time.Since(startTime).Milliseconds(),
-			OriginalBody:    condStr(s.config.VerboseLogging, truncateBody(string(body)), ""),
+			OriginalBody:    condStr(cfg.VerboseLogging, truncateBody(string(body)), ""),
 		})
 		return hardLimitMessages(format), "stop"
 	}
@@ -904,8 +878,8 @@ func (s *ProxyServer) executeRetry(body []byte, format string) (responseBody []b
 		Path:        path + " (防循环重试)",
 		StatusCode:  resp.StatusCode,
 		LatencyMs:   time.Since(startTime).Milliseconds(),
-		OriginalBody:    condStr(s.config.VerboseLogging, truncateBody(string(body)), ""),
-		ResponseBody:    condStr(s.config.VerboseLogging, truncateBody(string(respBytes)), ""),
+		OriginalBody:    condStr(cfg.VerboseLogging, truncateBody(string(body)), ""),
+		ResponseBody:    condStr(cfg.VerboseLogging, truncateBody(string(respBytes)), ""),
 	})
 
 	// Extract and update token usage

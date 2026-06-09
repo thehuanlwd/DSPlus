@@ -14,7 +14,7 @@ var indexHTML []byte
 
 // All state passed via parameters; no package-level globals needed.
 
-func handleGUI(w http.ResponseWriter, r *http.Request, l *Logger, cfg *Config) {
+func handleGUI(w http.ResponseWriter, r *http.Request, l *Logger, cfg *SafeConfig, svc *AnalysisService) {
 	if r.URL.Path == "/" || r.URL.Path == "/index.html" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write(indexHTML)
@@ -41,13 +41,13 @@ func handleGUI(w http.ResponseWriter, r *http.Request, l *Logger, cfg *Config) {
 	case path == "/analysis/status":
 		handleAPIAnalysisStatus(w, r, cfg)
 	case path == "/analysis/sessions" && r.Method == "GET":
-		handleAPIAnalysisSessions(w, r)
+		handleAPIAnalysisSessions(w, r, svc)
 	case path == "/analysis/sessions" && r.Method == "DELETE":
-		handleAPIClearAnalysisHistory(w, r)
+		handleAPIClearAnalysisHistory(w, r, svc)
 	case strings.HasPrefix(path, "/analysis/sessions/") && strings.HasSuffix(path, "/export.md"):
-		handleAPIAnalysisExport(w, r, path)
+		handleAPIAnalysisExport(w, r, path, svc)
 	case strings.HasPrefix(path, "/analysis/sessions/"):
-		handleAPIAnalysisSessionDetail(w, r, path)
+		handleAPIAnalysisSessionDetail(w, r, path, svc)
 	case path == "/logs" && r.Method == "DELETE":
 		l.Clear()
 		json.NewEncoder(w).Encode(map[string]string{"status": "cleared"})
@@ -66,21 +66,22 @@ func handleGUI(w http.ResponseWriter, r *http.Request, l *Logger, cfg *Config) {
 	}
 }
 
-func handleAPIStatus(w http.ResponseWriter, r *http.Request, l *Logger, cfg *Config) {
+func handleAPIStatus(w http.ResponseWriter, r *http.Request, l *Logger, cfg *SafeConfig) {
+	c := cfg.Get()
 	stats := l.Stats()
 	reasons := []string{}
 	restartRequired := false
-	if cfg.Port != runtimePort {
+	if c.Port != runtimePort {
 		restartRequired = true
 		reasons = append(reasons, "服务端口")
 	}
-	if cfg.LANAccess != runtimeLANAccess {
+	if c.LANAccess != runtimeLANAccess {
 		restartRequired = true
 		reasons = append(reasons, "局域网/WSL 访问")
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"port":             cfg.Port,
+		"port":             c.Port,
 		"total":            stats["total"],
 		"today":            stats["today"],
 		"max_logs":         l.maxSize,
@@ -130,84 +131,101 @@ func handleAPILogDetail(w http.ResponseWriter, r *http.Request, l *Logger, path 
 	json.NewEncoder(w).Encode(entry)
 }
 
-func handleAPIGetConfig(w http.ResponseWriter, r *http.Request, cfg *Config) {
-	cfgCopy := *cfg
+func handleAPIGetConfig(w http.ResponseWriter, r *http.Request, cfg *SafeConfig) {
+	cfgCopy := cfg.Get()
 	cfgCopy.APIKey = maskAPIKey(cfgCopy.APIKey)
 	json.NewEncoder(w).Encode(cfgCopy)
 }
 
-func handleAPISaveConfig(w http.ResponseWriter, r *http.Request, cfg *Config) {
+func handleAPISaveConfig(w http.ResponseWriter, r *http.Request, cfg *SafeConfig) {
 	var updates map[string]interface{}
 	if err := json.NewDecoder(r.Body).Decode(&updates); err != nil {
 		http.Error(w, `{"error":"invalid json"}`, http.StatusBadRequest)
 		return
 	}
 
+	var reasons []string
+	var restartRequired bool
+	var err error
 	changed := false
 
-	// API key: special handling for masked value comparison.
-	if v, ok := updates["api_key"]; ok {
-		if s, ok := v.(string); ok && s != "" && s != maskAPIKey(cfg.APIKey) {
-			cfg.APIKey = s
-			changed = true
+	cfg.Update(func(c *Config) {
+		// API key: special handling for masked value comparison.
+		if v, ok := updates["api_key"]; ok {
+			if s, ok := v.(string); ok && s != "" && s != maskAPIKey(c.APIKey) {
+				c.APIKey = s
+				changed = true
+			}
 		}
-	}
-	// Port: must be in valid range.
-	if v, ok := updates["port"]; ok {
-		if f, ok := v.(float64); ok && f > 0 && f < 65536 {
-			cfg.Port = int(f)
-			changed = true
+		// Port: must be in valid range.
+		if v, ok := updates["port"]; ok {
+			if f, ok := v.(float64); ok && f > 0 && f < 65536 {
+				if c.Port != int(f) {
+					c.Port = int(f)
+					changed = true
+				}
+			}
 		}
-	}
-	// Upstreams: trim trailing slashes.
-	if v, ok := updates["openai_upstream"]; ok {
-		if s, ok := v.(string); ok && s != "" {
-			cfg.OpenAIUpstream = strings.TrimRight(s, "/")
-			changed = true
+		// Upstreams: trim trailing slashes.
+		if v, ok := updates["openai_upstream"]; ok {
+			if s, ok := v.(string); ok && s != "" {
+				trimmed := strings.TrimRight(s, "/")
+				if c.OpenAIUpstream != trimmed {
+					c.OpenAIUpstream = trimmed
+					changed = true
+				}
+			}
 		}
-	}
-	if v, ok := updates["anthropic_upstream"]; ok {
-		if s, ok := v.(string); ok && s != "" {
-			cfg.AnthropicUpstream = strings.TrimRight(s, "/")
-			changed = true
+		if v, ok := updates["anthropic_upstream"]; ok {
+			if s, ok := v.(string); ok && s != "" {
+				trimmed := strings.TrimRight(s, "/")
+				if c.AnthropicUpstream != trimmed {
+					c.AnthropicUpstream = trimmed
+					changed = true
+				}
+			}
 		}
-	}
 
-	// The remaining fields follow a simple pattern.
-	changed = setStringField(updates, "thinking_mode", &cfg.ThinkingMode) || changed
-	changed = setStringField(updates, "reasoning_effort", &cfg.ReasoningEffort) || changed
-	changed = setStringField(updates, "system_prompt_placement", &cfg.SystemPromptPlacement) || changed
-	changed = setStringField(updates, "extra_prompt", &cfg.ExtraPrompt) || changed
-	changed = setStringField(updates, "extra_prompt_placement", &cfg.ExtraPromptPlacement) || changed
-	changed = setStringField(updates, "max_tokens_mode", &cfg.MaxTokensMode) || changed
-	changed = setStringField(updates, "antiloop_retry_model", &cfg.AntiLoopRetryModel) || changed
-	changed = setStringField(updates, "antiloop_retry_thinking", &cfg.AntiLoopRetryThinking) || changed
-	changed = setStringField(updates, "antiloop_retry_effort", &cfg.AntiLoopRetryEffort) || changed
-	changed = setBoolField(updates, "verbose_logging", &cfg.VerboseLogging) || changed
-	changed = setBoolField(updates, "auto_open_gui", &cfg.AutoOpenGUI) || changed
-	changed = setBoolField(updates, "anti_loop_enabled", &cfg.AntiLoopEnabled) || changed
-	changed = setBoolField(updates, "debug_mode", &cfg.DebugMode) || changed
-	changed = setBoolField(updates, "auto_reasoning_content", &cfg.AutoReasoningContent) || changed
-	changed = setBoolField(updates, "lan_access", &cfg.LANAccess) || changed
-	changed = setIntField(updates, "max_tokens_custom", &cfg.MaxTokensCustom, 0) || changed
-	changed = setIntField(updates, "antiloop_check_tokens", &cfg.AntiLoopCheckTokens, 0) || changed
+		// The remaining fields follow a simple pattern.
+		changed = setStringField(updates, "thinking_mode", &c.ThinkingMode) || changed
+		changed = setStringField(updates, "reasoning_effort", &c.ReasoningEffort) || changed
+		changed = setStringField(updates, "system_prompt_placement", &c.SystemPromptPlacement) || changed
+		changed = setStringField(updates, "extra_prompt", &c.ExtraPrompt) || changed
+		changed = setStringField(updates, "extra_prompt_placement", &c.ExtraPromptPlacement) || changed
+		changed = setStringField(updates, "max_tokens_mode", &c.MaxTokensMode) || changed
+		changed = setStringField(updates, "antiloop_retry_model", &c.AntiLoopRetryModel) || changed
+		changed = setStringField(updates, "antiloop_retry_thinking", &c.AntiLoopRetryThinking) || changed
+		changed = setStringField(updates, "antiloop_retry_effort", &c.AntiLoopRetryEffort) || changed
+		changed = setBoolField(updates, "verbose_logging", &c.VerboseLogging) || changed
+		changed = setBoolField(updates, "auto_open_gui", &c.AutoOpenGUI) || changed
+		changed = setBoolField(updates, "anti_loop_enabled", &c.AntiLoopEnabled) || changed
+		changed = setBoolField(updates, "debug_mode", &c.DebugMode) || changed
+		changed = setBoolField(updates, "auto_reasoning_content", &c.AutoReasoningContent) || changed
+		changed = setBoolField(updates, "lan_access", &c.LANAccess) || changed
+		changed = setIntField(updates, "max_tokens_custom", &c.MaxTokensCustom, 0) || changed
+		changed = setIntField(updates, "antiloop_check_tokens", &c.AntiLoopCheckTokens, 0) || changed
+
+		if changed {
+			if err = SaveConfig(*c); err != nil {
+				return
+			}
+			if c.Port != runtimePort {
+				restartRequired = true
+				reasons = append(reasons, "服务端口")
+			}
+			if c.LANAccess != runtimeLANAccess {
+				restartRequired = true
+				reasons = append(reasons, "局域网/WSL 访问")
+			}
+		}
+	})
+
+	if err != nil {
+		http.Error(w, `{"error":"failed to save config"}`, http.StatusInternalServerError)
+		return
+	}
 
 	if changed {
-		if err := SaveConfig(*cfg); err != nil {
-			http.Error(w, `{"error":"failed to save config"}`, http.StatusInternalServerError)
-			return
-		}
-		reasons := []string{}
-		restartRequired := false
-		if cfg.Port != runtimePort {
-			restartRequired = true
-			reasons = append(reasons, "服务端口")
-		}
-		if cfg.LANAccess != runtimeLANAccess {
-			restartRequired = true
-			reasons = append(reasons, "局域网/WSL 访问")
-		}
-
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"status":           "saved",
 			"restart_required": restartRequired,
@@ -280,16 +298,17 @@ func maskAPIKey(key string) string {
 	return key[:5] + strings.Repeat("*", len(key)-8) + key[len(key)-3:]
 }
 
-func handleAPIAnalysisStatus(w http.ResponseWriter, r *http.Request, cfg *Config) {
+func handleAPIAnalysisStatus(w http.ResponseWriter, r *http.Request, cfg *SafeConfig) {
+	c := cfg.Get()
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"analysis_enabled":        cfg.AnalysisEnabled,
-		"analysis_persistence":    cfg.AnalysisPersistence,
-		"analysis_persist_raw":    cfg.AnalysisPersistRawBodies,
-		"analysis_retention_days": cfg.AnalysisRetentionDays,
+		"analysis_enabled":        c.AnalysisEnabled,
+		"analysis_persistence":    c.AnalysisPersistence,
+		"analysis_persist_raw":    c.AnalysisPersistRawBodies,
+		"analysis_retention_days": c.AnalysisRetentionDays,
 	})
 }
 
-func handleAPIAnalysisSessions(w http.ResponseWriter, r *http.Request) {
+func handleAPIAnalysisSessions(w http.ResponseWriter, r *http.Request, svc *AnalysisService) {
 	limitStr := r.URL.Query().Get("limit")
 	offsetStr := r.URL.Query().Get("offset")
 
@@ -302,7 +321,6 @@ func handleAPIAnalysisSessions(w http.ResponseWriter, r *http.Request) {
 		offset = v
 	}
 
-	svc := GetAnalysisService()
 	if svc == nil {
 		json.NewEncoder(w).Encode([]SessionSummary{})
 		return
@@ -315,9 +333,8 @@ func handleAPIAnalysisSessions(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(summaries)
 }
 
-func handleAPIAnalysisSessionDetail(w http.ResponseWriter, r *http.Request, path string) {
+func handleAPIAnalysisSessionDetail(w http.ResponseWriter, r *http.Request, path string, svc *AnalysisService) {
 	id := strings.TrimPrefix(path, "/analysis/sessions/")
-	svc := GetAnalysisService()
 	if svc == nil {
 		http.Error(w, `{"error":"analysis service not initialized"}`, http.StatusInternalServerError)
 		return
@@ -332,11 +349,10 @@ func handleAPIAnalysisSessionDetail(w http.ResponseWriter, r *http.Request, path
 	json.NewEncoder(w).Encode(sess)
 }
 
-func handleAPIAnalysisExport(w http.ResponseWriter, r *http.Request, path string) {
+func handleAPIAnalysisExport(w http.ResponseWriter, r *http.Request, path string, svc *AnalysisService) {
 	id := strings.TrimPrefix(path, "/analysis/sessions/")
 	id = strings.TrimSuffix(id, "/export.md")
 
-	svc := GetAnalysisService()
 	if svc == nil {
 		http.Error(w, "analysis service not initialized", http.StatusInternalServerError)
 		return
@@ -353,8 +369,7 @@ func handleAPIAnalysisExport(w http.ResponseWriter, r *http.Request, path string
 	w.Write([]byte(md))
 }
 
-func handleAPIClearAnalysisHistory(w http.ResponseWriter, r *http.Request) {
-	svc := GetAnalysisService()
+func handleAPIClearAnalysisHistory(w http.ResponseWriter, r *http.Request, svc *AnalysisService) {
 	if svc == nil {
 		http.Error(w, `{"error":"analysis service not initialized"}`, http.StatusInternalServerError)
 		return

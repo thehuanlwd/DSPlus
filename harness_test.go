@@ -482,7 +482,8 @@ func runAutoToolHarness(t *testing.T, isStream bool, isAnthropic bool) {
 
 	// 3. 内存中启动 Gateway Proxy 监听 8188
 	initTrace()
-	svc := InitAnalysisService(&testConfig)
+	safeTestConfig := NewSafeConfig(testConfig)
+	svc := InitAnalysisService(safeTestConfig)
 	// 清空原有的内存和磁盘 sessions，防止历史污染
 	svc.lock.Lock()
 	svc.sessions = make(map[string]*ConversationSession)
@@ -491,7 +492,7 @@ func runAutoToolHarness(t *testing.T, isStream bool, isAnthropic bool) {
 	os.MkdirAll(svc.logDir, 0755)
 
 	logger := NewLogger(100)
-	proxy := NewProxyServer(&testConfig, logger)
+	proxy := NewProxyServer(safeTestConfig, logger, svc)
 	
 	gatewayServer := &http.Server{
 		Addr:    "127.0.0.1:8188",

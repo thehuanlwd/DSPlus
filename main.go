@@ -33,6 +33,8 @@ func main() {
 	noGUI := flag.Bool("no-gui", false, "do not open GUI window")
 	flag.Parse()
 
+	var safeCfg *SafeConfig
+
 	for {
 		cfg, err := LoadConfig()
 		if err != nil {
@@ -47,21 +49,31 @@ func main() {
 			cfg.Port = 8188
 		}
 
+		if safeCfg == nil {
+			safeCfg = NewSafeConfig(cfg)
+		} else {
+			safeCfg.Update(func(c *Config) {
+				*c = cfg
+			})
+		}
+
+		c := safeCfg.Get()
+
 		initTrace()
-		svc := InitAnalysisService(&cfg)
+		svc := InitAnalysisService(safeCfg)
 		if svc != nil {
-			svc.config = &cfg
+			svc.config = safeCfg
 		}
 		logger := NewLogger(2000)
-		proxy := NewProxyServer(&cfg, logger)
+		proxy := NewProxyServer(safeCfg, logger, svc)
 		initWSHub(logger)
 
 		// 决定监听的主机地址
 		bindHost := "127.0.0.1"
-		if cfg.LANAccess {
+		if c.LANAccess {
 			bindHost = "0.0.0.0"
 		}
-		addr := fmt.Sprintf("%s:%d", bindHost, cfg.Port)
+		addr := fmt.Sprintf("%s:%d", bindHost, c.Port)
 
 		ln, err := net.Listen("tcp", addr)
 		if err != nil {
@@ -76,8 +88,8 @@ func main() {
 		// 异步启动 HTTP 服务
 		go func() {
 			log.Printf("[server] DSPlus starting on %s", addr)
-			log.Printf("[server] OpenAI upstream: %s", cfg.OpenAIUpstream)
-			log.Printf("[server] Anthropic upstream: %s", cfg.AnthropicUpstream)
+			log.Printf("[server] OpenAI upstream: %s", c.OpenAIUpstream)
+			log.Printf("[server] Anthropic upstream: %s", c.AnthropicUpstream)
 			if err := server.Serve(ln); err != nil && err != http.ErrServerClosed {
 				log.Fatalf("[server] failed to start: %v", err)
 			}
@@ -85,16 +97,16 @@ func main() {
 
 		// 异步打开 GUI
 		shutdownCh := make(chan struct{})
-		if !*noGUI && cfg.AutoOpenGUI {
-			go openGUI(fmt.Sprintf("http://127.0.0.1:%d", cfg.Port), shutdownCh)
+		if !*noGUI && c.AutoOpenGUI {
+			go openGUI(fmt.Sprintf("http://127.0.0.1:%d", c.Port), shutdownCh)
 		}
 
 		fmt.Printf("DSPlus v0.1.0\n")
-		fmt.Printf("Listening on http://%s:%d\n", bindHost, cfg.Port)
-		fmt.Printf("GUI: http://127.0.0.1:%d\n", cfg.Port)
+		fmt.Printf("Listening on http://%s:%d\n", bindHost, c.Port)
+		fmt.Printf("GUI: http://127.0.0.1:%d\n", c.Port)
 		fmt.Printf("Press Ctrl+C or close GUI window to stop\n")
 
-		setRuntimeState(cfg.Port, cfg.LANAccess)
+		setRuntimeState(c.Port, c.LANAccess)
 
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

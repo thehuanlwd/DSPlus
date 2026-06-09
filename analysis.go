@@ -1,8 +1,6 @@
 package main
 
 import (
-	"crypto/md5"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -128,7 +126,7 @@ type SessionSummary struct {
 
 // AnalysisService 核心分析服务
 type AnalysisService struct {
-	config     *Config
+	config     *SafeConfig
 	lock       sync.RWMutex
 	sessions   map[string]*ConversationSession
 	eventChan  chan *TraceEvent
@@ -142,7 +140,7 @@ var (
 )
 
 // InitAnalysisService 初始化全局分析服务
-func InitAnalysisService(cfg *Config) *AnalysisService {
+func InitAnalysisService(cfg *SafeConfig) *AnalysisService {
 	analysisOnce.Do(func() {
 		exe, _ := os.Executable()
 		logDir := filepath.Join(filepath.Dir(exe), "analysis_logs")
@@ -155,7 +153,7 @@ func InitAnalysisService(cfg *Config) *AnalysisService {
 			shutdownCh: make(chan struct{}),
 		}
 
-		if cfg.AnalysisEnabled {
+		if cfg.Get().AnalysisEnabled {
 			// 创建日志目录
 			if err := os.MkdirAll(logDir, 0755); err != nil {
 				log.Printf("[analysis] failed to create directory %s: %v", logDir, err)
@@ -177,7 +175,7 @@ func GetAnalysisService() *AnalysisService {
 
 // SubmitEvent 提交 TraceEvent 至服务，非阻塞
 func (s *AnalysisService) SubmitEvent(ev *TraceEvent) {
-	if s == nil || !s.config.AnalysisEnabled {
+	if s == nil || !s.config.Get().AnalysisEnabled {
 		return
 	}
 	// 仅过滤聊天 completions/messages 相关的路由
@@ -325,7 +323,7 @@ func (s *AnalysisService) processEvent(ev *TraceEvent) {
 	}
 
 	// 3. 持久化落盘 (如果配置开启)
-	if s.config.AnalysisPersistence {
+	if s.config.Get().AnalysisPersistence {
 		s.writeToDisk(ev)
 	}
 
@@ -343,31 +341,42 @@ func (s *AnalysisService) inferSession(ev *TraceEvent) {
 	ev.TurnID = 1
 }
 
-func getFirstUserMessage(ev *TraceEvent) string {
-	if ev.RawRequest == "" {
-		return ""
+// NewTraceEvent 是 TraceEvent 的统一构建工厂方法
+func NewTraceEvent(
+	startTime time.Time,
+	logID int64,
+	sessionID string,
+	turnID int,
+	phase string,
+	format string,
+	route string,
+	status int,
+	latencyMs int64,
+	model string,
+	upstream string,
+	reqMeta RequestMeta,
+	respMeta ResponseMeta,
+	rawRequest string,
+	rawResponse string,
+) *TraceEvent {
+	return &TraceEvent{
+		ID:          "ev_" + strconv.FormatInt(startTime.UnixNano(), 36),
+		Time:        startTime,
+		LogID:       logID,
+		SessionID:   sessionID,
+		TurnID:      turnID,
+		Phase:       phase,
+		Format:      format,
+		Route:       route,
+		Status:      status,
+		LatencyMs:   latencyMs,
+		Model:       model,
+		Upstream:    upstream,
+		Request:     reqMeta,
+		Response:    respMeta,
+		RawRequest:  rawRequest,
+		RawResponse: rawResponse,
 	}
-	var body map[string]interface{}
-	if err := json.Unmarshal([]byte(ev.RawRequest), &body); err != nil {
-		return ""
-	}
-
-	messages, ok := body["messages"].([]interface{})
-	if !ok || len(messages) == 0 {
-		return ""
-	}
-
-	for _, msgVal := range messages {
-		msg, ok := msgVal.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		role, _ := msg["role"].(string)
-		if role == "user" {
-			return extractMessageText(msg)
-		}
-	}
-	return ""
 }
 
 func getLastUserMessage(ev *TraceEvent) string {
@@ -395,66 +404,6 @@ func getLastUserMessage(ev *TraceEvent) string {
 		}
 	}
 	return ""
-}
-
-func cleanFirstMessage(msg string) string {
-	return strings.TrimSpace(msg)
-}
-
-func (s *AnalysisService) calculateRequestFingerprint(ev *TraceEvent) string {
-	if ev.RawRequest == "" {
-		return ""
-	}
-	var body map[string]interface{}
-	if err := json.Unmarshal([]byte(ev.RawRequest), &body); err != nil {
-		return ""
-	}
-
-	messages, ok := body["messages"].([]interface{})
-	if !ok || len(messages) <= 1 {
-		return ""
-	}
-
-	// 连接除最后一条消息外的所有 user 消息的角色和内容
-	var sb strings.Builder
-	for i := 0; i < len(messages)-1; i++ {
-		msg, ok := messages[i].(map[string]interface{})
-		if !ok {
-			continue
-		}
-		role, _ := msg["role"].(string)
-		if role != "user" {
-			continue
-		}
-		content := extractMessageText(msg)
-		sb.WriteString(role)
-		sb.WriteString(content)
-	}
-
-	h := md5.New()
-	h.Write([]byte(sb.String()))
-	return hex.EncodeToString(h.Sum(nil))
-}
-
-func (s *AnalysisService) calculateSessionFingerprint(sess *ConversationSession) string {
-	// 将 sess.Turns 按 TurnID 升序排列
-	var tids []int
-	for tid := range sess.Turns {
-		tids = append(tids, tid)
-	}
-	sort.Ints(tids)
-
-	var sb strings.Builder
-	for _, tid := range tids {
-		turn := sess.Turns[tid]
-		// 只拼接 user 消息，排除未落盘的 assistant 消息干扰
-		sb.WriteString("user")
-		sb.WriteString(turn.UserMessage)
-	}
-
-	h := md5.New()
-	h.Write([]byte(sb.String()))
-	return hex.EncodeToString(h.Sum(nil))
 }
 
 func extractMessageText(msg map[string]interface{}) string {
@@ -514,7 +463,7 @@ func (s *AnalysisService) cleanupOldLogs() {
 			return
 		}
 
-		cutoff := time.Now().AddDate(0, 0, -s.config.AnalysisRetentionDays)
+		cutoff := time.Now().AddDate(0, 0, -s.config.Get().AnalysisRetentionDays)
 
 		for _, file := range files {
 			if filepath.Ext(file.Name()) != ".jsonl" {
@@ -569,7 +518,7 @@ func (s *AnalysisService) loadHistoryFromDisk() {
 	}
 	sort.Strings(logFiles)
 
-	cutoff := time.Now().AddDate(0, 0, -s.config.AnalysisRetentionDays)
+	cutoff := time.Now().AddDate(0, 0, -s.config.Get().AnalysisRetentionDays)
 
 	for _, fileName := range logFiles {
 		filePath := filepath.Join(s.logDir, fileName)
@@ -759,7 +708,7 @@ func (s *AnalysisService) ClearHistory() error {
 
 // AssignSessionAndTurn 给新到的请求分配 SessionID 和 TurnID
 func (s *AnalysisService) AssignSessionAndTurn(startTime time.Time, rawRequest string, format string, route string) (string, int) {
-	if s == nil || !s.config.AnalysisEnabled {
+	if s == nil || !s.config.Get().AnalysisEnabled {
 		return "", 0
 	}
 	// 仅过滤聊天 completions/messages 相关的路由
@@ -822,32 +771,9 @@ func parseAssistantContent(rawText string, format string) string {
 		var sb strings.Builder
 		lines := strings.Split(rawText, "\n")
 		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "data: ") {
-				dataStr := strings.TrimPrefix(line, "data: ")
-				if dataStr == "[DONE]" {
-					continue
-				}
-				var chunk map[string]interface{}
-				if err := json.Unmarshal([]byte(dataStr), &chunk); err == nil {
-					// 兼容 OpenAI chunk 格式
-					if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
-						if choice, ok := choices[0].(map[string]interface{}); ok {
-							if delta, ok := choice["delta"].(map[string]interface{}); ok {
-								if ct, _ := delta["content"].(string); ct != "" {
-									sb.WriteString(ct)
-								}
-							}
-						}
-					}
-					// 兼容 Anthropic chunk 格式
-					if typeVal, _ := chunk["type"].(string); typeVal == "content_block_delta" {
-						if delta, ok := chunk["delta"].(map[string]interface{}); ok {
-							if text, ok := delta["text"].(string); ok {
-								sb.WriteString(text)
-							}
-						}
-					}
+			if delta, err := ParseSSELine(line); err == nil && delta != nil {
+				if delta.Content != "" {
+					sb.WriteString(delta.Content)
 				}
 			}
 		}
@@ -894,31 +820,9 @@ func parseAssistantReasoning(rawText string, format string) string {
 		var sb strings.Builder
 		lines := strings.Split(rawText, "\n")
 		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if strings.HasPrefix(line, "data: ") {
-				dataStr := strings.TrimPrefix(line, "data: ")
-				if dataStr == "[DONE]" {
-					continue
-				}
-				var chunk map[string]interface{}
-				if err := json.Unmarshal([]byte(dataStr), &chunk); err == nil {
-					if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
-						if choice, ok := choices[0].(map[string]interface{}); ok {
-							if delta, ok := choice["delta"].(map[string]interface{}); ok {
-								if rc, _ := delta["reasoning_content"].(string); rc != "" {
-									sb.WriteString(rc)
-								}
-							}
-						}
-					}
-					// 兼容 Anthropic chunk 格式
-					if chunk["type"] == "content_block_delta" {
-						if delta, ok := chunk["delta"].(map[string]interface{}); ok {
-							if rc, _ := delta["thinking"].(string); rc != "" {
-								sb.WriteString(rc)
-							}
-						}
-					}
+			if delta, err := ParseSSELine(line); err == nil && delta != nil {
+				if delta.ReasoningContent != "" {
+					sb.WriteString(delta.ReasoningContent)
 				}
 			}
 		}

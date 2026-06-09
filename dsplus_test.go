@@ -402,7 +402,7 @@ func TestConfigPersistence(t *testing.T) {
 // ── injectThinkingParams ─────────────────────────────────────────────────────
 
 func TestInjectThinkingParams_Disabled(t *testing.T) {
-	ps := &ProxyServer{config: &Config{ThinkingMode: "disabled"}}
+	ps := &ProxyServer{config: NewSafeConfig(Config{ThinkingMode: "disabled"})}
 	data := map[string]interface{}{"model": "test"}
 	ps.injectThinkingParams(data, "openai")
 	thinking := data["thinking"].(map[string]interface{})
@@ -412,7 +412,7 @@ func TestInjectThinkingParams_Disabled(t *testing.T) {
 }
 
 func TestInjectThinkingParams_Enabled(t *testing.T) {
-	ps := &ProxyServer{config: &Config{ThinkingMode: "enabled", ReasoningEffort: "max"}}
+	ps := &ProxyServer{config: NewSafeConfig(Config{ThinkingMode: "enabled", ReasoningEffort: "max"})}
 	data := map[string]interface{}{"model": "test"}
 	ps.injectThinkingParams(data, "openai")
 	thinking := data["thinking"].(map[string]interface{})
@@ -425,7 +425,7 @@ func TestInjectThinkingParams_Enabled(t *testing.T) {
 }
 
 func TestInjectThinkingParams_Empty(t *testing.T) {
-	ps := &ProxyServer{config: &Config{ThinkingMode: ""}}
+	ps := &ProxyServer{config: NewSafeConfig(Config{ThinkingMode: ""})}
 	data := map[string]interface{}{"model": "test"}
 	ps.injectThinkingParams(data, "openai")
 	if _, exists := data["thinking"]; exists {
@@ -436,7 +436,7 @@ func TestInjectThinkingParams_Empty(t *testing.T) {
 // ── injectMaxTokens ─────────────────────────────────────────────────────────
 
 func TestInjectMaxTokens_Custom(t *testing.T) {
-	ps := &ProxyServer{config: &Config{MaxTokensMode: "custom", MaxTokensCustom: 8000}}
+	ps := &ProxyServer{config: NewSafeConfig(Config{MaxTokensMode: "custom", MaxTokensCustom: 8000})}
 	data := map[string]interface{}{}
 	ps.injectMaxTokens(data)
 	if data["max_tokens"] != 8000 {
@@ -445,7 +445,7 @@ func TestInjectMaxTokens_Custom(t *testing.T) {
 }
 
 func TestInjectMaxTokens_Empty(t *testing.T) {
-	ps := &ProxyServer{config: &Config{MaxTokensMode: ""}}
+	ps := &ProxyServer{config: NewSafeConfig(Config{MaxTokensMode: ""})}
 	data := map[string]interface{}{"max_tokens": 100}
 	ps.injectMaxTokens(data)
 	if data["max_tokens"] != 100 {
@@ -542,7 +542,7 @@ func TestHandleAPISaveConfig_LANAccessRequiresRestart(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(`{"port":8188,"lan_access":true}`))
 	rec := httptest.NewRecorder()
-	handleAPISaveConfig(rec, req, &cfg)
+	handleAPISaveConfig(rec, req, NewSafeConfig(cfg))
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())

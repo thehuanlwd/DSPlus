@@ -118,7 +118,21 @@ func (l *Logger) GetAll(limit, offset int) []LogEntry {
 	}
 
 	result := make([]LogEntry, end-start)
-	copy(result, l.entries[start:end])
+	for i, entry := range l.entries[start:end] {
+		entryCopy := entry
+		if entryCopy.TokenUsage != nil {
+			usageCopy := *entryCopy.TokenUsage
+			entryCopy.TokenUsage = &usageCopy
+		}
+		if entryCopy.ResponseHeaders != nil {
+			headersCopy := make(map[string]string, len(entryCopy.ResponseHeaders))
+			for k, v := range entryCopy.ResponseHeaders {
+				headersCopy[k] = v
+			}
+			entryCopy.ResponseHeaders = headersCopy
+		}
+		result[i] = entryCopy
+	}
 
 	for i, j := 0, len(result)-1; i < j; i, j = i+1, j-1 {
 		result[i], result[j] = result[j], result[i]
@@ -131,7 +145,19 @@ func (l *Logger) Get(id int64) *LogEntry {
 	defer l.mu.RUnlock()
 	for i := len(l.entries) - 1; i >= 0; i-- {
 		if l.entries[i].ID == id {
-			return &l.entries[i]
+			entryCopy := l.entries[i]
+			if entryCopy.TokenUsage != nil {
+				usageCopy := *entryCopy.TokenUsage
+				entryCopy.TokenUsage = &usageCopy
+			}
+			if entryCopy.ResponseHeaders != nil {
+				headersCopy := make(map[string]string, len(entryCopy.ResponseHeaders))
+				for k, v := range entryCopy.ResponseHeaders {
+					headersCopy[k] = v
+				}
+				entryCopy.ResponseHeaders = headersCopy
+			}
+			return &entryCopy
 		}
 	}
 	return nil

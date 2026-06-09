@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 )
 
 type Config struct {
@@ -32,7 +33,6 @@ type Config struct {
 	AnalysisPersistence    bool   `json:"analysis_persistence"`
 	AnalysisPersistRawBodies bool `json:"analysis_persist_raw_bodies"`
 	AnalysisRetentionDays  int    `json:"analysis_retention_days"`
-	AnalysisSessionGapMin  int    `json:"analysis_session_gap_min"`
 }
 
 func DefaultConfig() Config {
@@ -57,7 +57,6 @@ func DefaultConfig() Config {
 		AnalysisPersistence:    false,
 		AnalysisPersistRawBodies: false,
 		AnalysisRetentionDays:  7,
-		AnalysisSessionGapMin:  30,
 	}
 }
 
@@ -87,4 +86,25 @@ func SaveConfig(cfg Config) error {
 		return err
 	}
 	return os.WriteFile(configPath(), data, 0600)
+}
+
+type SafeConfig struct {
+	mu  sync.RWMutex
+	cfg Config
+}
+
+func NewSafeConfig(cfg Config) *SafeConfig {
+	return &SafeConfig{cfg: cfg}
+}
+
+func (sc *SafeConfig) Get() Config {
+	sc.mu.RLock()
+	defer sc.mu.RUnlock()
+	return sc.cfg
+}
+
+func (sc *SafeConfig) Update(fn func(*Config)) {
+	sc.mu.Lock()
+	defer sc.mu.Unlock()
+	fn(&sc.cfg)
 }

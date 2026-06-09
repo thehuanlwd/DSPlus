@@ -36,16 +36,34 @@ const (
 	truncateBodyMaxLen = 524288 // 512 KB
 )
 
-type ProxyServer struct {
-	config *Config
-	logger *Logger
-	client *http.Client
+// ProxyContext 封装代理请求转发的上下文参数，用于扁平化跨函数参数传递
+type ProxyContext struct {
+	ResponseWriter  http.ResponseWriter
+	Response        *http.Response
+	LogID           int64
+	StartTime       time.Time
+	Format          string
+	Route           string
+	OriginalBody    string
+	TransformedBody []byte
+	Transformed     bool
+	Data            map[string]interface{}
+	SessionID       string
+	TurnID          int
 }
 
-func NewProxyServer(cfg *Config, l *Logger) *ProxyServer {
+type ProxyServer struct {
+	config      *SafeConfig
+	logger      *Logger
+	analysisSvc *AnalysisService
+	client      *http.Client
+}
+
+func NewProxyServer(cfg *SafeConfig, l *Logger, svc *AnalysisService) *ProxyServer {
 	return &ProxyServer{
-		config: cfg,
-		logger: l,
+		config:      cfg,
+		logger:      l,
+		analysisSvc: svc,
 		client: &http.Client{
 			Timeout: 0, // no timeout (streaming)
 			Transport: &http.Transport{
@@ -77,7 +95,7 @@ func (s *ProxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/" || r.URL.Path == "/index.html" {
-		handleGUI(w, r, s.logger, s.config)
+		handleGUI(w, r, s.logger, s.config, s.analysisSvc)
 		return
 	}
 
@@ -91,6 +109,7 @@ func (s *ProxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 	startTime := time.Now()
+	cfg := s.config.Get()
 
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -119,13 +138,13 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 	if format == "openai" {
 		hasSystemPrompt = strings.Contains(originalBody, `"role":"system"`) ||
 			strings.Contains(originalBody, `"role": "system"`)
-		if data != nil && (hasSystemPrompt || (s.config.ExtraPrompt != "" && s.config.ExtraPromptPlacement != "none")) {
-			transformed = transformOpenAIInPlace(data, s.config.SystemPromptPlacement, s.config.ExtraPrompt, s.config.ExtraPromptPlacement)
+		if data != nil && (hasSystemPrompt || (cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none")) {
+			transformed = transformOpenAIInPlace(data, cfg.SystemPromptPlacement, cfg.ExtraPrompt, cfg.ExtraPromptPlacement)
 		}
 	} else if format == "anthropic" {
 		hasSystemPrompt = strings.Contains(originalBody, `"system":`)
-		if data != nil && (hasSystemPrompt || (s.config.ExtraPrompt != "" && s.config.ExtraPromptPlacement != "none")) {
-			transformed = transformAnthropicInPlace(data, s.config.SystemPromptPlacement, s.config.ExtraPrompt, s.config.ExtraPromptPlacement)
+		if data != nil && (hasSystemPrompt || (cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none")) {
+			transformed = transformAnthropicInPlace(data, cfg.SystemPromptPlacement, cfg.ExtraPrompt, cfg.ExtraPromptPlacement)
 		}
 	}
 
@@ -135,7 +154,7 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		s.injectMaxTokens(data)
 	}
 
-	if data != nil && s.config.AutoReasoningContent {
+	if data != nil && cfg.AutoReasoningContent {
 		injectReasoningContent(data)
 	}
 
@@ -162,7 +181,7 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	copyHeaders(proxyReq.Header, r.Header)
-	proxyReq.Header.Set("Authorization", "Bearer "+s.config.APIKey)
+	proxyReq.Header.Set("Authorization", "Bearer "+cfg.APIKey)
 	proxyReq.Header.Del("x-api-key")
 	proxyReq.Header.Set("Content-Length", strconv.Itoa(len(transformedBody)))
 	proxyReq.Host = ""
@@ -181,7 +200,7 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 			Transformed:     transformed,
 			HasSystemPrompt: hasSystemPrompt,
 		}
-		if s.config.VerboseLogging {
+		if cfg.VerboseLogging {
 			entry.OriginalBody = truncateBody(originalBody)
 			entry.TransformedBody = truncateBody(string(transformedBody))
 		}
@@ -203,12 +222,26 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 	// ── Assign Session and Turn upfront ──
 	var sessID string
 	var turnID int
-	if s.config.AnalysisEnabled {
-		sessID, turnID = GetAnalysisService().AssignSessionAndTurn(startTime, originalBody, format, r.URL.Path)
+	if cfg.AnalysisEnabled {
+		sessID, turnID = s.analysisSvc.AssignSessionAndTurn(startTime, originalBody, format, r.URL.Path)
+	}
+
+	ctx := &ProxyContext{
+		ResponseWriter:  w,
+		Response:        resp,
+		StartTime:       startTime,
+		Format:          format,
+		Route:           r.URL.Path,
+		OriginalBody:    originalBody,
+		TransformedBody: transformedBody,
+		Transformed:     transformed,
+		Data:            data,
+		SessionID:       sessID,
+		TurnID:          turnID,
 	}
 
 	// ── Anti-Loop detection ──
-	if s.config.AntiLoopEnabled {
+	if cfg.AntiLoopEnabled {
 		if isStream {
 			// Streaming: forward chunks immediately, retry if truncated
 			latency := time.Since(startTime)
@@ -222,12 +255,13 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 				Transformed:      transformed,
 				HasSystemPrompt:  hasSystemPrompt,
 				ResponseHeaders:  respHeaders,
-				OriginalBody:     condStr(s.config.VerboseLogging, truncateBody(originalBody), ""),
-				TransformedBody:  condStr(s.config.VerboseLogging, truncateBody(string(transformedBody)), ""),
+				OriginalBody:     condStr(cfg.VerboseLogging, truncateBody(originalBody), ""),
+				TransformedBody:  condStr(cfg.VerboseLogging, truncateBody(string(transformedBody)), ""),
 			})
+			ctx.LogID = logID
 			copyHeaders(w.Header(), resp.Header)
 			w.WriteHeader(resp.StatusCode)
-			s.forwardStreamWithAntiLoop(w, resp, logID, transformedBody, format, startTime, r.URL.Path, originalBody, transformed, data, sessID, turnID)
+			s.forwardStreamWithAntiLoop(ctx)
 			return
 		}
 
@@ -257,35 +291,35 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 			Transformed:      transformed,
 			HasSystemPrompt:  hasSystemPrompt,
 			ResponseHeaders:  respHeaders,
-			OriginalBody:     condStr(s.config.VerboseLogging, truncateBody(originalBody), ""),
-			TransformedBody:  condStr(s.config.VerboseLogging, truncateBody(string(transformedBody)), ""),
+			OriginalBody:     condStr(cfg.VerboseLogging, truncateBody(originalBody), ""),
+			TransformedBody:  condStr(cfg.VerboseLogging, truncateBody(string(transformedBody)), ""),
 		})
+		ctx.LogID = logID
 
 		var pm TokenUsage
 		if u := extractUsageFromBody(string(bodyBytes)); u != nil {
 			s.logger.UpdateTokenUsage(logID, u)
 			pm = *u
 		}
-		if s.config.VerboseLogging {
+		if cfg.VerboseLogging {
 			s.logger.UpdateLastResponse(logID, truncateBody(string(bodyBytes)))
 		}
 
 		// 发射非流式 TraceEvent
-		GetAnalysisService().SubmitEvent(&TraceEvent{
-			ID:        "ev_" + strconv.FormatInt(startTime.UnixNano(), 36),
-			Time:      startTime,
-			LogID:     logID,
-			SessionID: sessID,
-			TurnID:    turnID,
-			Phase:     "primary",
-			Format:    format,
-			Route:     r.URL.Path,
-			Status:    resp.StatusCode,
-			LatencyMs: latency.Milliseconds(),
-			Model:     detectModel(originalBody),
-			Upstream:  upstream,
-			Request:   buildRequestMeta(data, format, transformed, s.config.ExtraPrompt != "" && s.config.ExtraPromptPlacement != "none"),
-			Response: ResponseMeta{
+		s.analysisSvc.SubmitEvent(NewTraceEvent(
+			startTime,
+			logID,
+			sessID,
+			turnID,
+			"primary",
+			format,
+			r.URL.Path,
+			resp.StatusCode,
+			latency.Milliseconds(),
+			detectModel(originalBody),
+			upstream,
+			buildRequestMeta(data, format, transformed, cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none"),
+			ResponseMeta{
 				FinishReason:     detectBufferFinishReason(bodyBytes),
 				PromptTokens:     int(pm.Prompt),
 				CompletionTokens: int(pm.Completion),
@@ -295,9 +329,9 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 				ReasoningContent:  parseAssistantReasoning(string(bodyBytes), format),
 				Content:           parseAssistantContent(string(bodyBytes), format),
 			},
-			RawRequest:  originalBody,
-			RawResponse: string(bodyBytes),
-		})
+			originalBody,
+			string(bodyBytes),
+		))
 
 		copyHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
@@ -318,22 +352,24 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		Transformed:      transformed,
 		HasSystemPrompt:  hasSystemPrompt,
 		ResponseHeaders:  respHeaders,
-		OriginalBody:     condStr(s.config.VerboseLogging, truncateBody(originalBody), ""),
-		TransformedBody:  condStr(s.config.VerboseLogging, truncateBody(string(transformedBody)), ""),
+		OriginalBody:     condStr(cfg.VerboseLogging, truncateBody(originalBody), ""),
+		TransformedBody:  condStr(cfg.VerboseLogging, truncateBody(string(transformedBody)), ""),
 	})
+	ctx.LogID = logID
 
 	copyHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 
 	if isStream {
-		s.forwardStream(w, resp, logID, startTime, format, r.URL.Path, originalBody, transformedBody, transformed, data, sessID, turnID)
+		s.forwardStream(ctx)
 	} else {
-		s.forwardBuffered(w, resp, logID, startTime, format, r.URL.Path, originalBody, transformedBody, transformed, data, sessID, turnID)
+		s.forwardBuffered(ctx)
 	}
 }
 
 func (s *ProxyServer) injectThinkingParams(data map[string]interface{}, format string) {
-	mode := s.config.ThinkingMode
+	cfg := s.config.Get()
+	mode := cfg.ThinkingMode
 	if mode == "" {
 		return
 	}
@@ -343,19 +379,20 @@ func (s *ProxyServer) injectThinkingParams(data map[string]interface{}, format s
 			data["thinking"] = map[string]interface{}{"type": "disabled"}
 		} else if mode == "enabled" {
 			data["thinking"] = map[string]interface{}{"type": "enabled"}
-			if s.config.ReasoningEffort != "" {
-				data["reasoning_effort"] = s.config.ReasoningEffort
+			if cfg.ReasoningEffort != "" {
+				data["reasoning_effort"] = cfg.ReasoningEffort
 			}
 		}
 	} else if format == "anthropic" && mode == "enabled" {
-		if s.config.ReasoningEffort != "" {
-			data["output_config"] = map[string]interface{}{"effort": s.config.ReasoningEffort}
+		if cfg.ReasoningEffort != "" {
+			data["output_config"] = map[string]interface{}{"effort": cfg.ReasoningEffort}
 		}
 	}
 }
 
 func (s *ProxyServer) injectMaxTokens(data map[string]interface{}) {
-	mode := s.config.MaxTokensMode
+	cfg := s.config.Get()
+	mode := cfg.MaxTokensMode
 	if mode == "" {
 		return
 	}
@@ -367,7 +404,7 @@ func (s *ProxyServer) injectMaxTokens(data map[string]interface{}) {
 	case "32000":
 		maxTokens = 32000
 	case "custom":
-		maxTokens = s.config.MaxTokensCustom
+		maxTokens = cfg.MaxTokensCustom
 	default:
 		return
 	}
@@ -402,23 +439,11 @@ func injectReasoningContent(data map[string]interface{}) {
 	}
 }
 
-func (s *ProxyServer) forwardStream(
-	w http.ResponseWriter,
-	resp *http.Response,
-	logID int64,
-	startTime time.Time,
-	format string,
-	route string,
-	originalBody string,
-	transformedBody []byte,
-	transformed bool,
-	data map[string]interface{},
-	sessID string,
-	turnID int,
-) {
-	flusher, canFlush := w.(http.Flusher)
+func (s *ProxyServer) forwardStream(ctx *ProxyContext) {
+	cfg := s.config.Get()
+	flusher, canFlush := ctx.ResponseWriter.(http.Flusher)
 	capture := newCaptureBuffer(captureBufCap)
-	scanner := bufio.NewScanner(resp.Body)
+	scanner := bufio.NewScanner(ctx.Response.Body)
 	scanner.Buffer(make([]byte, 0, scannerInitialBuf), scannerMaxBuf)
 
 	var lastUsage *TokenUsage
@@ -429,7 +454,7 @@ func (s *ProxyServer) forwardStream(
 	for scanner.Scan() {
 		line := scanner.Text()
 		line = replaceDSMLMarkers(line)
-		if _, err := w.Write([]byte(line + "\n")); err != nil {
+		if _, err := ctx.ResponseWriter.Write([]byte(line + "\n")); err != nil {
 			log.Printf("[proxy] forwardStream write error: %v", err)
 			break
 		}
@@ -438,41 +463,18 @@ func (s *ProxyServer) forwardStream(
 			flusher.Flush()
 		}
 
-		if strings.HasPrefix(line, "data: ") {
-			dataStr := strings.TrimPrefix(line, "data: ")
-			if dataStr != "[DONE]" {
-				var chunk map[string]interface{}
-				if err := json.Unmarshal([]byte(dataStr), &chunk); err == nil {
-					if u := parseUsageFromMap(chunk); u != nil {
-						lastUsage = u
-					}
-					if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
-						if choice, ok := choices[0].(map[string]interface{}); ok {
-							if fr, _ := choice["finish_reason"].(string); fr != "" {
-								finishReason = fr
-							}
-							if delta, ok := choice["delta"].(map[string]interface{}); ok {
-								if rc, _ := delta["reasoning_content"].(string); rc != "" {
-									reasoningBuilder.WriteString(rc)
-								}
-								if ct, _ := delta["content"].(string); ct != "" {
-									contentBuilder.WriteString(ct)
-								}
-							}
-						}
-					}
-					// 兼容 Anthropic chunk 格式
-					if chunk["type"] == "content_block_delta" {
-						if delta, ok := chunk["delta"].(map[string]interface{}); ok {
-							if rc, _ := delta["thinking"].(string); rc != "" {
-								reasoningBuilder.WriteString(rc)
-							}
-							if ct, _ := delta["text"].(string); ct != "" {
-								contentBuilder.WriteString(ct)
-							}
-						}
-					}
-				}
+		if delta, err := ParseSSELine(line); err == nil && delta != nil {
+			if delta.Usage != nil {
+				lastUsage = delta.Usage
+			}
+			if delta.FinishReason != "" {
+				finishReason = delta.FinishReason
+			}
+			if delta.ReasoningContent != "" {
+				reasoningBuilder.WriteString(delta.ReasoningContent)
+			}
+			if delta.Content != "" {
+				contentBuilder.WriteString(delta.Content)
 			}
 		}
 	}
@@ -482,10 +484,10 @@ func (s *ProxyServer) forwardStream(
 	}
 
 	if lastUsage != nil {
-		s.logger.UpdateTokenUsage(logID, lastUsage)
+		s.logger.UpdateTokenUsage(ctx.LogID, lastUsage)
 	}
-	if s.config.VerboseLogging {
-		s.logger.UpdateLastResponse(logID, capture.String())
+	if cfg.VerboseLogging {
+		s.logger.UpdateLastResponse(ctx.LogID, capture.String())
 	}
 
 	// 发射 TraceEvent
@@ -493,21 +495,20 @@ func (s *ProxyServer) forwardStream(
 	if lastUsage != nil {
 		pm = *lastUsage
 	}
-	GetAnalysisService().SubmitEvent(&TraceEvent{
-		ID:        "ev_" + strconv.FormatInt(startTime.UnixNano(), 36),
-		Time:      startTime,
-		LogID:     logID,
-		SessionID: sessID,
-		TurnID:    turnID,
-		Phase:     "primary",
-		Format:    format,
-		Route:     route,
-		Status:    resp.StatusCode,
-		LatencyMs: time.Since(startTime).Milliseconds(),
-		Model:     detectModel(originalBody),
-		Upstream:  s.selectUpstream(format),
-		Request:   buildRequestMeta(data, format, transformed, s.config.ExtraPrompt != "" && s.config.ExtraPromptPlacement != "none"),
-		Response: ResponseMeta{
+	s.analysisSvc.SubmitEvent(NewTraceEvent(
+		ctx.StartTime,
+		ctx.LogID,
+		ctx.SessionID,
+		ctx.TurnID,
+		"primary",
+		ctx.Format,
+		ctx.Route,
+		ctx.Response.StatusCode,
+		time.Since(ctx.StartTime).Milliseconds(),
+		detectModel(ctx.OriginalBody),
+		s.selectUpstream(ctx.Format),
+		buildRequestMeta(ctx.Data, ctx.Format, ctx.Transformed, cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none"),
+		ResponseMeta{
 			FinishReason:     finishReason,
 			PromptTokens:     int(pm.Prompt),
 			CompletionTokens: int(pm.Completion),
@@ -517,40 +518,28 @@ func (s *ProxyServer) forwardStream(
 			ReasoningContent:  reasoningBuilder.String(),
 			Content:           contentBuilder.String(),
 		},
-		RawRequest:  originalBody,
-		RawResponse: capture.String(),
-	})
+		ctx.OriginalBody,
+		capture.String(),
+	))
 }
 
-func (s *ProxyServer) forwardBuffered(
-	w http.ResponseWriter,
-	resp *http.Response,
-	logID int64,
-	startTime time.Time,
-	format string,
-	route string,
-	originalBody string,
-	transformedBody []byte,
-	transformed bool,
-	data map[string]interface{},
-	sessID string,
-	turnID int,
-) {
-	bodyBytes, err := io.ReadAll(resp.Body)
+func (s *ProxyServer) forwardBuffered(ctx *ProxyContext) {
+	cfg := s.config.Get()
+	bodyBytes, err := io.ReadAll(ctx.Response.Body)
 	if err != nil {
 		log.Printf("[proxy] forwardBuffered read error: %v", err)
 		return
 	}
 	bodyBytes = replaceDSMLMarkersBytes(bodyBytes)
-	w.Write(bodyBytes)
+	ctx.ResponseWriter.Write(bodyBytes)
 
 	var lastUsage *TokenUsage
 	if u := extractUsageFromBody(string(bodyBytes)); u != nil {
-		s.logger.UpdateTokenUsage(logID, u)
+		s.logger.UpdateTokenUsage(ctx.LogID, u)
 		lastUsage = u
 	}
-	if s.config.VerboseLogging {
-		s.logger.UpdateLastResponse(logID, truncateBody(string(bodyBytes)))
+	if cfg.VerboseLogging {
+		s.logger.UpdateLastResponse(ctx.LogID, truncateBody(string(bodyBytes)))
 	}
 
 	fr := detectBufferFinishReason(bodyBytes)
@@ -560,110 +549,123 @@ func (s *ProxyServer) forwardBuffered(
 	if lastUsage != nil {
 		pm = *lastUsage
 	}
-	GetAnalysisService().SubmitEvent(&TraceEvent{
-		ID:        "ev_" + strconv.FormatInt(startTime.UnixNano(), 36),
-		Time:      startTime,
-		LogID:     logID,
-		SessionID: sessID,
-		TurnID:    turnID,
-		Phase:     "primary",
-		Format:    format,
-		Route:     route,
-		Status:    resp.StatusCode,
-		LatencyMs: time.Since(startTime).Milliseconds(),
-		Model:     detectModel(originalBody),
-		Upstream:  s.selectUpstream(format),
-		Request:   buildRequestMeta(data, format, transformed, s.config.ExtraPrompt != "" && s.config.ExtraPromptPlacement != "none"),
-		Response: ResponseMeta{
+	s.analysisSvc.SubmitEvent(NewTraceEvent(
+		ctx.StartTime,
+		ctx.LogID,
+		ctx.SessionID,
+		ctx.TurnID,
+		"primary",
+		ctx.Format,
+		ctx.Route,
+		ctx.Response.StatusCode,
+		time.Since(ctx.StartTime).Milliseconds(),
+		detectModel(ctx.OriginalBody),
+		s.selectUpstream(ctx.Format),
+		buildRequestMeta(ctx.Data, ctx.Format, ctx.Transformed, cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none"),
+		ResponseMeta{
 			FinishReason:     fr,
 			PromptTokens:     int(pm.Prompt),
 			CompletionTokens: int(pm.Completion),
 			TotalTokens:      int(pm.Total),
 			CacheHitTokens:    int(pm.CacheHit),
 			CacheMissTokens:   int(pm.CacheMiss),
-			ReasoningContent:  parseAssistantReasoning(string(bodyBytes), format),
-			Content:           parseAssistantContent(string(bodyBytes), format),
+			ReasoningContent:  parseAssistantReasoning(string(bodyBytes), ctx.Format),
+			Content:           parseAssistantContent(string(bodyBytes), ctx.Format),
 		},
-		RawRequest:  originalBody,
-		RawResponse: string(bodyBytes),
-	})
+		ctx.OriginalBody,
+		string(bodyBytes),
+	))
 }
 
-func (s *ProxyServer) forwardStreamWithAntiLoop(
-	w http.ResponseWriter,
-	resp *http.Response,
-	logID int64,
-	transformedBody []byte,
-	format string,
-	startTime time.Time,
-	route string,
-	originalBody string,
-	transformed bool,
-	data map[string]interface{},
-	sessID string,
-	turnID int,
-) {
-	flusher, canFlush := w.(http.Flusher)
-	scanner := bufio.NewScanner(resp.Body)
+type antiLoopState struct {
+	reqID                 int64
+	parentEventID         string
+	finishReason          string
+	reasoningBuilder      strings.Builder
+	contentBuilder        strings.Builder
+	lastUsage             *TokenUsage
+	streamID              string
+	streamModel           string
+	streamCreated         float64
+	capture               *captureBuffer
+	earlyStop             bool
+	earlyStopAnalysis     *AntiLoopAnalysis
+	debugLogID            int64
+	watchdogStop          chan<- struct{}
+	scannerExitedNormally bool
+	flusher               http.Flusher
+	canFlush              bool
+	scanner               *bufio.Scanner
+	needsRetry            bool
+	retryBody             []byte
+}
+
+func (s *ProxyServer) initAntiLoopState(ctx *ProxyContext) *antiLoopState {
+	cfg := s.config.Get()
+	flusher, canFlush := ctx.ResponseWriter.(http.Flusher)
+	scanner := bufio.NewScanner(ctx.Response.Body)
 	scanner.Buffer(make([]byte, 0, scannerInitialBuf), scannerMaxBuf)
 
-	var finishReason string
-	var reasoningBuilder strings.Builder
-	var contentBuilder strings.Builder
-	var lastUsage *TokenUsage
-	var streamID, streamModel string
-	var streamCreated float64
-	capture := newCaptureBuffer(captureBufCap)
-
 	reqID := nextTraceReqID()
-	parentEventID := "ev_" + strconv.FormatInt(startTime.UnixNano(), 36)
-	traceKeyvals("event", "phase1_start", "req_id", reqID, "threshold", s.config.AntiLoopCheckTokens,
-		"retry_model", s.config.AntiLoopRetryModel, "format", format)
+	parentEventID := "ev_" + strconv.FormatInt(ctx.StartTime.UnixNano(), 36)
+	
+	traceKeyvals("event", "phase1_start", "req_id", reqID, "threshold", cfg.AntiLoopCheckTokens,
+		"retry_model", cfg.AntiLoopRetryModel, "format", ctx.Format)
 
-	// ── Proactive parallel analysis state ──
-	var completionTokens int              // cumulative from usage chunks
-	var analyzeDone chan analyzeResult    // goroutine result channel
-	var analyzeTriggered bool             // prevent duplicate triggers
-	var earlyStop bool                    // set when parallel analyzer says stop
-	var earlyStopAnalysis *AntiLoopAnalysis
-	var debugLogID int64 // debug mode: log entry ID for real-time token updates
-	chunkCount := 0
-	lastTracedTokens := 0
-	var watchdogStop chan<- struct{}     // progress watchdog
-	var scannerExitedNormally bool       // set to true when scanner.Scan() returns false
-
-	log.Printf("[antiloop] Phase 1 start: streaming first response in real-time, reqID=%d", reqID)
-
-	// ── Debug mode: create a dedicated log entry for real-time token tracking ──
-	if s.config.DebugMode {
+	var debugLogID int64
+	if cfg.DebugMode {
 		debugLogID = s.logger.Add(LogEntry{
 			Time:        time.Now(),
 			Format:      "debug",
 			RequestType: "debug",
 			Method:      "TRACE",
 			Path:        "/antiloop/tokens",
-			StatusCode:  s.config.AntiLoopCheckTokens, // misuse: shows threshold
+			StatusCode:  cfg.AntiLoopCheckTokens,
 		})
 		log.Printf("[antiloop] debug entry created id=%d for reqID=%d", debugLogID, reqID)
 	}
 
-	// ── Phase 1: Stream + monitor tokens + parallel analysis ──
-	watchdogStop = startProgressWatchdog(fmt.Sprintf("Phase1(reqID=%d)", reqID), 60*time.Second)
-	for scanner.Scan() {
-		watchdogStop = resetProgressWatchdog(watchdogStop)
+	watchdogStop := startProgressWatchdog(fmt.Sprintf("Phase1(reqID=%d)", reqID), 60*time.Second)
 
-		line := scanner.Text()
+	return &antiLoopState{
+		reqID:         reqID,
+		parentEventID: parentEventID,
+		capture:       newCaptureBuffer(captureBufCap),
+		debugLogID:    debugLogID,
+		watchdogStop:  watchdogStop,
+		flusher:       flusher,
+		canFlush:      canFlush,
+		scanner:       scanner,
+	}
+}
+
+func (s *ProxyServer) streamAndMonitorPhase1(ctx *ProxyContext, state *antiLoopState) {
+	log.Printf("[antiloop] Phase 1 start: streaming first response in real-time, reqID=%d", state.reqID)
+	cfg := s.config.Get()
+
+	var completionTokens int
+	var analyzeDone chan analyzeResult
+	var analyzeTriggered bool
+	chunkCount := 0
+	lastTracedTokens := 0
+
+	for state.scanner.Scan() {
+		state.watchdogStop = resetProgressWatchdog(state.watchdogStop)
+
+		line := state.scanner.Text()
 		line = replaceDSMLMarkers(line)
 
 		if !strings.HasPrefix(line, "data: ") {
-			if _, err := w.Write([]byte(line + "\n")); err != nil {
-				log.Printf("[antiloop] reqID=%d write error (non-data): %v", reqID, err)
-				traceKeyvals("event", "write_error", "req_id", reqID, "error", err.Error())
-				scannerExitedNormally = false
+			if _, err := ctx.ResponseWriter.Write([]byte(line + "\n")); err != nil {
+				log.Printf("[antiloop] reqID=%d write error (non-data): %v", state.reqID, err)
+				traceKeyvals("event", "write_error", "req_id", state.reqID, "error", err.Error())
+				state.scannerExitedNormally = false
 				break
 			}
-			capture.Write([]byte(line + "\n"))
-			if canFlush { flusher.Flush() }
+			state.capture.Write([]byte(line + "\n"))
+			if state.canFlush {
+				state.flusher.Flush()
+			}
 			continue
 		}
 
@@ -674,63 +676,60 @@ func (s *ProxyServer) forwardStreamWithAntiLoop(
 
 		var chunk map[string]interface{}
 		if err := json.Unmarshal([]byte(dataChunk), &chunk); err != nil {
-			if _, werr := w.Write([]byte(line + "\n")); werr != nil {
-				log.Printf("[antiloop] reqID=%d write error (unmarshal fallback): %v", reqID, werr)
-				traceKeyvals("event", "write_error", "req_id", reqID, "context", "unmarshal_fallback", "error", werr.Error())
+			if _, werr := ctx.ResponseWriter.Write([]byte(line + "\n")); werr != nil {
+				log.Printf("[antiloop] reqID=%d write error (unmarshal fallback): %v", state.reqID, werr)
+				traceKeyvals("event", "write_error", "req_id", state.reqID, "context", "unmarshal_fallback", "error", werr.Error())
 				break
 			}
-			capture.Write([]byte(line + "\n"))
-			if canFlush { flusher.Flush() }
+			state.capture.Write([]byte(line + "\n"))
+			if state.canFlush {
+				state.flusher.Flush()
+			}
 			continue
 		}
 
-		// Track response metadata from first valid chunk
-		if streamID == "" {
-			if id, _ := chunk["id"].(string); id != "" { streamID = id }
-			if m, _ := chunk["model"].(string); m != "" { streamModel = m }
-			if c, ok := chunk["created"].(float64); ok { streamCreated = c }
+		if state.streamID == "" {
+			if id, _ := chunk["id"].(string); id != "" {
+				state.streamID = id
+			}
+			if m, _ := chunk["model"].(string); m != "" {
+				state.streamModel = m
+			}
+			if c, ok := chunk["created"].(float64); ok {
+				state.streamCreated = c
+			}
 		}
 
-		// ── Track completion_tokens from usage (may be null in most chunks) ──
 		if usage, ok := chunk["usage"].(map[string]interface{}); ok {
 			if ct, ok := usage["completion_tokens"].(float64); ok {
 				completionTokens = int(ct)
 			}
 		}
 
-		// ── Proactive check: trigger parallel analysis at threshold ──
-		// DeepSeek only sends non-null usage in the final chunk, so we also
-		// estimate tokens from accumulated character length as a fallback.
-		estimatedTokens := (reasoningBuilder.Len() + contentBuilder.Len()) / 4
+		estimatedTokens := (state.reasoningBuilder.Len() + state.contentBuilder.Len()) / 4
 		effectiveTokens := completionTokens
 		if estimatedTokens > effectiveTokens {
 			effectiveTokens = estimatedTokens
 		}
 		chunkCount++
 
-		// Periodic trace: every ~500 estimated tokens or when usage token count appears
 		if effectiveTokens > 0 && (effectiveTokens-lastTracedTokens >= 500 || (completionTokens > 0 && lastTracedTokens == 0)) {
 			lastTracedTokens = effectiveTokens
 			traceKeyvals("event", "chunk", "n", chunkCount, "usage", completionTokens,
 				"est", estimatedTokens, "eff", effectiveTokens,
-				"reasoning_chars", reasoningBuilder.Len(), "content_chars", contentBuilder.Len())
+				"reasoning_chars", state.reasoningBuilder.Len(), "content_chars", state.contentBuilder.Len())
 		}
 
-		if s.config.AntiLoopCheckTokens > 0 && !analyzeTriggered &&
-			effectiveTokens >= s.config.AntiLoopCheckTokens {
-			// ── Heuristic: zero content + very high reasoning → auto-intervene ──
-			if contentBuilder.Len() == 0 && reasoningBuilder.Len() > s.config.AntiLoopCheckTokens*2 {
-				tracelog("[antiloop] HEURISTIC: content=0 reasoning=%d chars → forcing intervention",
-					reasoningBuilder.Len())
-				traceKeyvals("event", "heuristic_force", "reasoning_chars", reasoningBuilder.Len(),
-					"content_chars", 0)
-				earlyStop = true
-				earlyStopAnalysis = &AntiLoopAnalysis{
+		if cfg.AntiLoopCheckTokens > 0 && !analyzeTriggered && effectiveTokens >= cfg.AntiLoopCheckTokens {
+			if state.contentBuilder.Len() == 0 && state.reasoningBuilder.Len() > cfg.AntiLoopCheckTokens*2 {
+				tracelog("[antiloop] HEURISTIC: content=0 reasoning=%d chars → forcing intervention", state.reasoningBuilder.Len())
+				traceKeyvals("event", "heuristic_force", "reasoning_chars", state.reasoningBuilder.Len(), "content_chars", 0)
+				state.earlyStop = true
+				state.earlyStopAnalysis = &AntiLoopAnalysis{
 					Judgment:       "excessive",
 					Guidance:       "你已经思考了极长时间但没有输出任何内容。立即停止思考，直接给出最终结论。",
 					EnableThinking: false,
 				}
-				// Log the heuristic as an analyzer-style entry
 				s.logger.Add(LogEntry{
 					Time:        time.Now(),
 					Format:      "openai",
@@ -739,78 +738,70 @@ func (s *ProxyServer) forwardStreamWithAntiLoop(
 					Path:        "/antiloop/heuristic (启发式判定)",
 					StatusCode:  200,
 					LatencyMs:   0,
-					OriginalBody: condStr(s.config.VerboseLogging,
+					OriginalBody: condStr(cfg.VerboseLogging,
 						fmt.Sprintf("reasoning_chars=%d content_chars=%d threshold=%d",
-							reasoningBuilder.Len(), contentBuilder.Len(), s.config.AntiLoopCheckTokens), ""),
-					ResponseBody: condStr(s.config.VerboseLogging,
-						"judgment=excessive guidance=立即停止思考", ""),
+							state.reasoningBuilder.Len(), state.contentBuilder.Len(), cfg.AntiLoopCheckTokens), ""),
+					ResponseBody: condStr(cfg.VerboseLogging, "judgment=excessive guidance=立即停止思考", ""),
 				})
-				resp.Body.Close()
-				goto PHASE1_DONE
+				ctx.Response.Body.Close()
+				return
 			}
 
 			analyzeTriggered = true
 			analyzeDone = make(chan analyzeResult, 1)
-			go s.parallelAnalyze(analyzeDone,
-				transformedBody, format,
-				reasoningBuilder.String(),
-				contentBuilder.String(),
-			)
+			go s.parallelAnalyze(analyzeDone, ctx.TransformedBody, ctx.Format, state.reasoningBuilder.String(), state.contentBuilder.String())
 			log.Printf("[antiloop] parallel analysis triggered at %d tokens", effectiveTokens)
 			traceKeyvals("event", "analyzer_launch", "eff", effectiveTokens, "usage", completionTokens, "est", estimatedTokens)
 		}
 
-		// ── Debug: push real-time token stats every chunk ──
-		if s.config.DebugMode && debugLogID != 0 {
-			s.logger.UpdateTokenUsage(debugLogID, &TokenUsage{
+		if cfg.DebugMode && state.debugLogID != 0 {
+			s.logger.UpdateTokenUsage(state.debugLogID, &TokenUsage{
 				Total:      int64(effectiveTokens),
 				Prompt:     int64(completionTokens),
 				Completion: int64(estimatedTokens),
-				CacheHit:   int64(reasoningBuilder.Len()),
-				CacheMiss:  int64(contentBuilder.Len()),
+				CacheHit:   int64(state.reasoningBuilder.Len()),
+				CacheMiss:  int64(state.contentBuilder.Len()),
 			})
 		}
 
-		// ── Non-blocking check: has the parallel analyzer finished? ──
 		if analyzeDone != nil {
 			select {
 			case result := <-analyzeDone:
 				if result.needsIntervention() {
-					log.Printf("[antiloop] parallel analyzer says STOP (judgment=%s), intervening",
-						result.analysis.Judgment)
-					traceKeyvals("event", "analyzer_stop", "judgment", result.analysis.Judgment,
-						"tokens", effectiveTokens)
-					earlyStop = true
-					earlyStopAnalysis = result.analysis
-					
-					// 提交分析器事件 (并行的 TraceEvent)
+					log.Printf("[antiloop] parallel analyzer says STOP (judgment=%s), intervening", result.analysis.Judgment)
+					traceKeyvals("event", "analyzer_stop", "judgment", result.analysis.Judgment, "tokens", effectiveTokens)
+					state.earlyStop = true
+					state.earlyStopAnalysis = result.analysis
+
 					analyzerEventID := "ana_" + strconv.FormatInt(time.Now().UnixNano(), 36)
-					GetAnalysisService().SubmitEvent(&TraceEvent{
-						ID:        analyzerEventID,
-						ParentID:  parentEventID,
-						SessionID: sessID,
-						TurnID:    turnID,
-						Time:      time.Now(),
-						Phase:     "analyzer",
-						Format:    "openai",
-						Route:     "/antiloop/analyze (parallel)",
-						Status:    200,
-						Model:     "deepseek-chat",
-						Upstream:  s.config.OpenAIUpstream,
-						Request:   buildRequestMeta(data, format, transformed, s.config.ExtraPrompt != "" && s.config.ExtraPromptPlacement != "none"),
-						Response: ResponseMeta{
+					anaEv := NewTraceEvent(
+						time.Now(),
+						ctx.LogID,
+						ctx.SessionID,
+						ctx.TurnID,
+						"analyzer",
+						"openai",
+						"/antiloop/analyze (parallel)",
+						200,
+						0,
+						"deepseek-chat",
+						cfg.OpenAIUpstream,
+						buildRequestMeta(ctx.Data, ctx.Format, ctx.Transformed, cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none"),
+						ResponseMeta{
 							AnalyzerJudgment: result.analysis.Judgment,
 							FinishReason:     "stop",
 						},
-						RawRequest:  "Parallel Analysis Target: " + reasoningBuilder.String(),
-						RawResponse: fmt.Sprintf("Judgment: %s\nGuidance: %s", result.analysis.Judgment, result.analysis.Guidance),
-					})
-					
-					resp.Body.Close() // stop reading upstream
-					goto PHASE1_DONE
+						"Parallel Analysis Target: " + state.reasoningBuilder.String(),
+						fmt.Sprintf("Judgment: %s\nGuidance: %s", result.analysis.Judgment, result.analysis.Guidance),
+					)
+					anaEv.ID = analyzerEventID
+					anaEv.ParentID = state.parentEventID
+					s.analysisSvc.SubmitEvent(anaEv)
+
+					ctx.Response.Body.Close()
+					return
 				} else {
-					log.Printf("[antiloop] parallel analyzer says CONTINUE (judgment=%s)",
-						result.analysis.Judgment)
+					log.Printf("[antiloop] parallel analyzer says CONTINUE (judgment=%s)", result.analysis.Judgment)
 					traceKeyvals("event", "analyzer_continue", "judgment", result.analysis.Judgment)
 				}
 				analyzeDone = nil
@@ -818,41 +809,39 @@ func (s *ProxyServer) forwardStreamWithAntiLoop(
 			}
 		}
 
-		// Inspect choices: strip finish_reason, accumulate content
 		modified := false
 		if choices, ok := chunk["choices"].([]interface{}); ok {
 			for _, c := range choices {
 				if choice, ok := c.(map[string]interface{}); ok {
 					if fr, _ := choice["finish_reason"].(string); fr != "" {
-						finishReason = fr
+						state.finishReason = fr
 						delete(choice, "finish_reason")
 						modified = true
 					}
 					if delta, ok := choice["delta"].(map[string]interface{}); ok {
 						if rc, _ := delta["reasoning_content"].(string); rc != "" {
-							reasoningBuilder.WriteString(rc)
+							state.reasoningBuilder.WriteString(rc)
 						}
 						if ct, _ := delta["content"].(string); ct != "" {
-							contentBuilder.WriteString(ct)
+							state.contentBuilder.WriteString(ct)
 						}
 					}
 				}
 			}
 		}
-		// 兼容 Anthropic chunk 格式
 		if chunk["type"] == "content_block_delta" {
 			if delta, ok := chunk["delta"].(map[string]interface{}); ok {
 				if rc, _ := delta["thinking"].(string); rc != "" {
-					reasoningBuilder.WriteString(rc)
+					state.reasoningBuilder.WriteString(rc)
 				}
 				if ct, _ := delta["text"].(string); ct != "" {
-					contentBuilder.WriteString(ct)
+					state.contentBuilder.WriteString(ct)
 				}
 			}
 		}
 
-		if u := parseUsageFromMap(chunk); u != nil && lastUsage == nil {
-			lastUsage = u
+		if u := parseUsageFromMap(chunk); u != nil && state.lastUsage == nil {
+			state.lastUsage = u
 		}
 
 		var outLine string
@@ -862,220 +851,258 @@ func (s *ProxyServer) forwardStreamWithAntiLoop(
 		} else {
 			outLine = line + "\n"
 		}
-		if _, err := w.Write([]byte(outLine)); err != nil {
-			log.Printf("[antiloop] reqID=%d write error (data): %v", reqID, err)
-			traceKeyvals("event", "write_error", "req_id", reqID, "context", "data_write", "error", err.Error())
+		if _, err := ctx.ResponseWriter.Write([]byte(outLine)); err != nil {
+			log.Printf("[antiloop] reqID=%d write error (data): %v", state.reqID, err)
+			traceKeyvals("event", "write_error", "req_id", state.reqID, "context", "data_write", "error", err.Error())
 			break
 		}
-		capture.Write([]byte(outLine))
-		if canFlush { flusher.Flush() }
+		state.capture.Write([]byte(outLine))
+		if state.canFlush {
+			state.flusher.Flush()
+		}
 	}
 
-	scannerExitedNormally = true
+	state.scannerExitedNormally = true
+}
 
-PHASE1_DONE:
-	// ── Stop watchdog and check scanner status ──
-	if watchdogStop != nil {
-		close(watchdogStop)
+func (s *ProxyServer) executeRetryPhase2(ctx *ProxyContext, state *antiLoopState) {
+	cfg := s.config.Get()
+	if state.watchdogStop != nil {
+		close(state.watchdogStop)
 	}
-	if scannerExitedNormally {
-		if err := scanner.Err(); err != nil {
-			log.Printf("[antiloop] reqID=%d scanner error: %v", reqID, err)
-			traceKeyvals("event", "scanner_error", "req_id", reqID, "error", err.Error())
+
+	if state.scannerExitedNormally {
+		if err := state.scanner.Err(); err != nil {
+			log.Printf("[antiloop] reqID=%d scanner error: %v", state.reqID, err)
+			traceKeyvals("event", "scanner_error", "req_id", state.reqID, "error", err.Error())
 		} else {
-			log.Printf("[antiloop] reqID=%d scanner finished normally", reqID)
-			traceKeyvals("event", "scanner_eof", "req_id", reqID)
+			log.Printf("[antiloop] reqID=%d scanner finished normally", state.reqID)
+			traceKeyvals("event", "scanner_eof", "req_id", state.reqID)
 		}
 	} else {
-		log.Printf("[antiloop] reqID=%d scanner exited abnormally (write error or break)", reqID)
-		traceKeyvals("event", "scanner_abort", "req_id", reqID)
+		log.Printf("[antiloop] reqID=%d scanner exited abnormally (write error or break)", state.reqID)
+		traceKeyvals("event", "scanner_abort", "req_id", state.reqID)
 	}
 
-	// ── Phase 2: Retry (early-stop or length fallback) ──
-	needsRetry := earlyStop || finishReason == "length"
-	if needsRetry {
-		reasoningContent := reasoningBuilder.String()
-		phase1Content := contentBuilder.String()
-
-		if streamID == "" { streamID = "dsplus-antiloop" }
-		if streamModel == "" { streamModel = "deepseek-chat" }
-		if streamCreated == 0 { streamCreated = float64(time.Now().Unix()) }
-
-		if _, err := w.Write([]byte("\n")); err != nil {
-			log.Printf("[antiloop] reqID=%d write error (retry separator): %v", reqID, err)
-			traceKeyvals("event", "write_error", "req_id", reqID, "context", "retry_separator", "error", err.Error())
-			goto FINALIZE
-		}
-		capture.Write([]byte("\n"))
-
-		if earlyStop {
-			log.Printf("[antiloop] reqID=%d early-stop indicator, analysis judgment=%s", reqID, earlyStopAnalysis.Judgment)
-		} else {
-			log.Printf("[antiloop] reqID=%d length-fallback indicator", reqID)
-		}
-		s.writeAntiloopIndicator(w, flusher, canFlush, capture, streamID, streamModel, streamCreated)
-
-		if _, err := w.Write([]byte("\n")); err != nil {
-			log.Printf("[antiloop] reqID=%d write error (retry indicator separator): %v", reqID, err)
-			traceKeyvals("event", "write_error", "req_id", reqID, "context", "retry_indicator_sep", "error", err.Error())
-			goto FINALIZE
-		}
-		capture.Write([]byte("\n"))
-		if canFlush { flusher.Flush() }
-
-		var retryBody []byte
-		if earlyStop && earlyStopAnalysis != nil {
-			log.Printf("[antiloop] reqID=%d building early-stop retry (judgment=%s)", reqID, earlyStopAnalysis.Judgment)
-			retryBody = s.buildGuidedRetryRequest(transformedBody, format, earlyStopAnalysis, phase1Content, reasoningContent, true)
-		} else if finishReason == "length" {
-			log.Printf("[antiloop] reqID=%d building length-fallback retry (reasoning=%d bytes, content=%d bytes)", reqID, len(reasoningContent), len(phase1Content))
-			var analyzeErr error
-			retryBody, analyzeErr = s.runAntiLoopAnalysis(transformedBody, format, phase1Content, reasoningContent)
-			if analyzeErr != nil {
-				log.Printf("[antiloop] reqID=%d analyzer failed: %v, using simple retry", reqID, analyzeErr)
-				retryBody = s.buildSimpleRetryRequest(transformedBody, format, phase1Content, reasoningContent)
+	state.needsRetry = state.earlyStop || state.finishReason == "length"
+	if !state.needsRetry {
+		log.Printf("[antiloop] reqID=%d no retry needed (finish_reason=%s)", state.reqID, state.finishReason)
+		traceKeyvals("event", "no_retry", "req_id", state.reqID, "finish_reason", state.finishReason)
+		if state.finishReason != "" {
+			if _, err := ctx.ResponseWriter.Write([]byte("\n")); err != nil {
+				log.Printf("[antiloop] reqID=%d write error (no-retry separator): %v", state.reqID, err)
+				return
 			}
-		}
-
-		log.Printf("[antiloop] reqID=%d Phase 2: executing retry request (body_bytes=%d)", reqID, len(retryBody))
-		traceKeyvals("event", "retry_start", "req_id", reqID, "body_bytes", len(retryBody), "early_stop", earlyStop)
-		retryFR, retryUsage := s.executeAndStreamRetry(w, flusher, canFlush, retryBody, format, capture, streamID)
-		log.Printf("[antiloop] reqID=%d Phase 2 end: retry finish_reason=%s retry_usage=%v", reqID, retryFR, retryUsage != nil)
-		traceKeyvals("event", "retry_end", "req_id", reqID, "finish_reason", retryFR, "has_usage", retryUsage != nil)
-
-		if retryFR == "length" || retryFR == "max_tokens" {
-			log.Printf("[antiloop] reqID=%d retry also hit limit, sending hard-limit message", reqID)
-			if _, err := w.Write([]byte("\n")); err != nil {
-				log.Printf("[antiloop] reqID=%d write error (hard-limit separator): %v", reqID, err)
-			}
-			capture.Write([]byte("\n"))
-			s.streamHardLimitSSE(w, flusher, canFlush, format, capture, streamID, streamModel, streamCreated)
-		}
-
-		// 提交重试事件
-		var rpm TokenUsage
-		if retryUsage != nil {
-			rpm = *retryUsage
-		}
-		retryEventID := "ret_" + strconv.FormatInt(time.Now().UnixNano(), 36)
-		GetAnalysisService().SubmitEvent(&TraceEvent{
-			ID:        retryEventID,
-			ParentID:  parentEventID,
-			SessionID: sessID,
-			TurnID:    turnID,
-			Time:      time.Now(),
-			Phase:     "retry",
-			Format:    format,
-			Route:     route + " (retry)",
-			Status:    200,
-			Model:     s.config.AntiLoopRetryModel,
-			Upstream:  s.selectUpstream(format),
-			Request:   buildRequestMeta(data, format, transformed, s.config.ExtraPrompt != "" && s.config.ExtraPromptPlacement != "none"),
-			Response: ResponseMeta{
-				FinishReason:     retryFR,
-				PromptTokens:     int(rpm.Prompt),
-				CompletionTokens: int(rpm.Completion),
-				TotalTokens:      int(rpm.Total),
-				CacheHitTokens:    int(rpm.CacheHit),
-				CacheMissTokens:   int(rpm.CacheMiss),
-				RetryModel:       s.config.AntiLoopRetryModel,
-			},
-			RawRequest:  string(retryBody),
-			RawResponse: capture.String(),
-		})
-
-		if retryUsage != nil { lastUsage = retryUsage }
-	} else {
-		log.Printf("[antiloop] reqID=%d no retry needed (finish_reason=%s)", reqID, finishReason)
-		traceKeyvals("event", "no_retry", "req_id", reqID, "finish_reason", finishReason)
-		if finishReason != "" {
-			if _, err := w.Write([]byte("\n")); err != nil {
-				log.Printf("[antiloop] reqID=%d write error (no-retry separator): %v", reqID, err)
-				goto FINALIZE
-			}
-			capture.Write([]byte("\n"))
+			state.capture.Write([]byte("\n"))
 			finishChunk := map[string]interface{}{
-				"id":      streamID,
+				"id":      state.streamID,
 				"object":  "chat.completion.chunk",
-				"created": streamCreated,
-				"model":   streamModel,
+				"created": state.streamCreated,
+				"model":   state.streamModel,
 				"choices": []map[string]interface{}{
 					{
 						"index":         0,
 						"delta":         map[string]interface{}{},
-						"finish_reason": finishReason,
+						"finish_reason": state.finishReason,
 					},
 				},
 			}
 			b, _ := json.Marshal(finishChunk)
 			line := "data: " + string(b) + "\n"
-			if _, err := w.Write([]byte(line)); err != nil {
-				log.Printf("[antiloop] reqID=%d write error (no-retry finish chunk): %v", reqID, err)
-				goto FINALIZE
+			if _, err := ctx.ResponseWriter.Write([]byte(line)); err != nil {
+				log.Printf("[antiloop] reqID=%d write error (no-retry finish chunk): %v", state.reqID, err)
+				return
 			}
-			capture.Write([]byte(line))
-			if canFlush { flusher.Flush() }
-			if _, err := w.Write([]byte("\n")); err != nil {
-				log.Printf("[antiloop] reqID=%d write error (no-retry final newline): %v", reqID, err)
-				goto FINALIZE
+			state.capture.Write([]byte(line))
+			if state.canFlush {
+				state.flusher.Flush()
 			}
-			capture.Write([]byte("\n"))
+			if _, err := ctx.ResponseWriter.Write([]byte("\n")); err != nil {
+				log.Printf("[antiloop] reqID=%d write error (no-retry final newline): %v", state.reqID, err)
+				return
+			}
+			state.capture.Write([]byte("\n"))
+		}
+		return
+	}
+
+	reasoningContent := state.reasoningBuilder.String()
+	phase1Content := state.contentBuilder.String()
+
+	if state.streamID == "" {
+		state.streamID = "dsplus-antiloop"
+	}
+	if state.streamModel == "" {
+		state.streamModel = "deepseek-chat"
+	}
+	if state.streamCreated == 0 {
+		state.streamCreated = float64(time.Now().Unix())
+	}
+
+	if _, err := ctx.ResponseWriter.Write([]byte("\n")); err != nil {
+		log.Printf("[antiloop] reqID=%d write error (retry separator): %v", state.reqID, err)
+		traceKeyvals("event", "write_error", "req_id", state.reqID, "context", "retry_separator", "error", err.Error())
+		return
+	}
+	state.capture.Write([]byte("\n"))
+
+	if state.earlyStop {
+		log.Printf("[antiloop] reqID=%d early-stop indicator, analysis judgment=%s", state.reqID, state.earlyStopAnalysis.Judgment)
+	} else {
+		log.Printf("[antiloop] reqID=%d length-fallback indicator", state.reqID)
+	}
+	s.writeAntiloopIndicator(ctx.ResponseWriter, state.flusher, state.canFlush, state.capture, state.streamID, state.streamModel, state.streamCreated)
+
+	if _, err := ctx.ResponseWriter.Write([]byte("\n")); err != nil {
+		log.Printf("[antiloop] reqID=%d write error (retry indicator separator): %v", state.reqID, err)
+		traceKeyvals("event", "write_error", "req_id", state.reqID, "context", "retry_indicator_sep", "error", err.Error())
+		return
+	}
+	state.capture.Write([]byte("\n"))
+	if state.canFlush {
+		state.flusher.Flush()
+	}
+
+	if state.earlyStop && state.earlyStopAnalysis != nil {
+		log.Printf("[antiloop] reqID=%d building early-stop retry (judgment=%s)", state.reqID, state.earlyStopAnalysis.Judgment)
+		state.retryBody = s.buildGuidedRetryRequest(ctx.TransformedBody, ctx.Format, state.earlyStopAnalysis, phase1Content, reasoningContent, true)
+	} else if state.finishReason == "length" {
+		log.Printf("[antiloop] reqID=%d building length-fallback retry (reasoning=%d bytes, content=%d bytes)", state.reqID, len(reasoningContent), len(phase1Content))
+		var analyzeErr error
+		state.retryBody, analyzeErr = s.runAntiLoopAnalysis(ctx.TransformedBody, ctx.Format, phase1Content, reasoningContent)
+		if analyzeErr != nil {
+			log.Printf("[antiloop] reqID=%d analyzer failed: %v, using simple retry", state.reqID, analyzeErr)
+			state.retryBody = s.buildSimpleRetryRequest(ctx.TransformedBody, ctx.Format, phase1Content, reasoningContent)
 		}
 	}
 
-FINALIZE:
-	// ── Final: send the real [DONE] ──
-	if _, err := w.Write([]byte("data: [DONE]\n")); err != nil {
-		log.Printf("[antiloop] reqID=%d write error ([DONE]): %v", reqID, err)
+	log.Printf("[antiloop] reqID=%d Phase 2: executing retry request (body_bytes=%d)", state.reqID, len(state.retryBody))
+	traceKeyvals("event", "retry_start", "req_id", state.reqID, "body_bytes", len(state.retryBody), "early_stop", state.earlyStop)
+	retryFR, retryUsage := s.executeAndStreamRetry(ctx.ResponseWriter, state.flusher, state.canFlush, state.retryBody, ctx.Format, state.capture, state.streamID)
+	log.Printf("[antiloop] reqID=%d Phase 2 end: retry finish_reason=%s retry_usage=%v", state.reqID, retryFR, retryUsage != nil)
+	traceKeyvals("event", "retry_end", "req_id", state.reqID, "finish_reason", retryFR, "has_usage", retryUsage != nil)
+
+	if retryFR == "length" || retryFR == "max_tokens" {
+		log.Printf("[antiloop] reqID=%d retry also hit limit, sending hard-limit message", state.reqID)
+		if _, err := ctx.ResponseWriter.Write([]byte("\n")); err != nil {
+			log.Printf("[antiloop] reqID=%d write error (hard-limit separator): %v", state.reqID, err)
+		}
+		state.capture.Write([]byte("\n"))
+		s.streamHardLimitSSE(ctx.ResponseWriter, state.flusher, state.canFlush, ctx.Format, state.capture, state.streamID, state.streamModel, state.streamCreated)
 	}
-	capture.Write([]byte("data: [DONE]\n"))
-	if canFlush { flusher.Flush() }
-	log.Printf("[antiloop] reqID=%d stream complete, [DONE] sent", reqID)
-	trace("stream_done req_id=%d", reqID)
 
-	if lastUsage != nil { s.logger.UpdateTokenUsage(logID, lastUsage) }
-	if s.config.VerboseLogging { s.logger.UpdateLastResponse(logID, capture.String()) }
+	var rpm TokenUsage
+	if retryUsage != nil {
+		rpm = *retryUsage
+	}
+	retryEventID := "ret_" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	retryEv := NewTraceEvent(
+		time.Now(),
+		ctx.LogID,
+		ctx.SessionID,
+		ctx.TurnID,
+		"retry",
+		ctx.Format,
+		ctx.Route+" (retry)",
+		200,
+		0,
+		cfg.AntiLoopRetryModel,
+		s.selectUpstream(ctx.Format),
+		buildRequestMeta(ctx.Data, ctx.Format, ctx.Transformed, cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none"),
+		ResponseMeta{
+			FinishReason:     retryFR,
+			PromptTokens:     int(rpm.Prompt),
+			CompletionTokens: int(rpm.Completion),
+			TotalTokens:      int(rpm.Total),
+			CacheHitTokens:   int(rpm.CacheHit),
+			CacheMissTokens:  int(rpm.CacheMiss),
+			RetryModel:       cfg.AntiLoopRetryModel,
+		},
+		string(state.retryBody),
+		state.capture.String(),
+	)
+	retryEv.ID = retryEventID
+	retryEv.ParentID = state.parentEventID
+	s.analysisSvc.SubmitEvent(retryEv)
 
-	// 统一提交 Primary 事件
+	if retryUsage != nil {
+		state.lastUsage = retryUsage
+	}
+}
+
+func (s *ProxyServer) finalizeStream(ctx *ProxyContext, state *antiLoopState) {
+	cfg := s.config.Get()
+	if _, err := ctx.ResponseWriter.Write([]byte("data: [DONE]\n")); err != nil {
+		log.Printf("[antiloop] write error ([DONE]): %v", err)
+	}
+	state.capture.Write([]byte("data: [DONE]\n"))
+	if state.canFlush {
+		state.flusher.Flush()
+	}
+	log.Printf("[antiloop] reqID=%d stream complete, [DONE] sent", state.reqID)
+	trace("stream_done req_id=%d", state.reqID)
+
+	if state.lastUsage != nil {
+		s.logger.UpdateTokenUsage(ctx.LogID, state.lastUsage)
+	}
+	if cfg.VerboseLogging {
+		s.logger.UpdateLastResponse(ctx.LogID, state.capture.String())
+	}
+
 	var pm TokenUsage
-	if lastUsage != nil {
-		pm = *lastUsage
+	if state.lastUsage != nil {
+		pm = *state.lastUsage
 	}
-	GetAnalysisService().SubmitEvent(&TraceEvent{
-		ID:        parentEventID,
-		Time:      startTime,
-		LogID:     logID,
-		SessionID: sessID,
-		TurnID:    turnID,
-		Phase:     "primary",
-		Format:    format,
-		Route:     route,
-		Status:    resp.StatusCode,
-		LatencyMs: time.Since(startTime).Milliseconds(),
-		Model:     detectModel(originalBody),
-		Upstream:  s.selectUpstream(format),
-		Request:   buildRequestMeta(data, format, transformed, s.config.ExtraPrompt != "" && s.config.ExtraPromptPlacement != "none"),
-		Response: ResponseMeta{
-			FinishReason:     finishReason,
-			PromptTokens:     int(pm.Prompt),
-			CompletionTokens: int(pm.Completion),
-			TotalTokens:      int(pm.Total),
+	primaryEv := NewTraceEvent(
+		ctx.StartTime,
+		ctx.LogID,
+		ctx.SessionID,
+		ctx.TurnID,
+		"primary",
+		ctx.Format,
+		ctx.Route,
+		ctx.Response.StatusCode,
+		time.Since(ctx.StartTime).Milliseconds(),
+		detectModel(ctx.OriginalBody),
+		s.selectUpstream(ctx.Format),
+		buildRequestMeta(ctx.Data, ctx.Format, ctx.Transformed, cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none"),
+		ResponseMeta{
+			FinishReason:      state.finishReason,
+			PromptTokens:      int(pm.Prompt),
+			CompletionTokens:  int(pm.Completion),
+			TotalTokens:       int(pm.Total),
 			CacheHitTokens:    int(pm.CacheHit),
 			CacheMissTokens:   int(pm.CacheMiss),
-			ReasoningContent:  reasoningBuilder.String(),
-			Content:           contentBuilder.String(),
-			AntiLoopTriggered: needsRetry,
+			ReasoningContent:  state.reasoningBuilder.String(),
+			Content:           state.contentBuilder.String(),
+			AntiLoopTriggered: state.needsRetry,
 		},
-		RawRequest:  originalBody,
-		RawResponse: capture.String(),
-	})
+		ctx.OriginalBody,
+		state.capture.String(),
+	)
+	primaryEv.ID = state.parentEventID
+	s.analysisSvc.SubmitEvent(primaryEv)
+}
+
+func (s *ProxyServer) forwardStreamWithAntiLoop(ctx *ProxyContext) {
+	state := s.initAntiLoopState(ctx)
+
+	// Phase 1: 实时流式转发与 token 监控
+	s.streamAndMonitorPhase1(ctx, state)
+
+	// Phase 2: 并行干预或超长阶段下的重试处理
+	s.executeRetryPhase2(ctx, state)
+
+	// Finalize: 发送 DONE 标签、写日志并提交 TraceEvent
+	s.finalizeStream(ctx, state)
 }
 
 func (s *ProxyServer) selectUpstream(format string) string {
+	cfg := s.config.Get()
 	if format == "anthropic" {
-		return s.config.AnthropicUpstream
+		return cfg.AnthropicUpstream
 	}
-	return s.config.OpenAIUpstream
+	return cfg.OpenAIUpstream
 }
 
 func detectFormat(body string) string {
