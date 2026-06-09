@@ -220,7 +220,7 @@ func (s *ProxyServer) handleAntiLoop(transformedBody []byte, format string, reas
 	}
 
 	log.Printf("[antiloop] retry succeeded, finish_reason=%s", fr)
-	return respBody
+	return replaceDSMLMarkersBytes(respBody)
 }
 
 // runAntiLoopAnalysis calls the sub-agent analyzer and builds the retry request.
@@ -332,6 +332,7 @@ func (s *ProxyServer) executeAndStreamRetry(
 		retryChunkCount++
 
 		line := scanner.Text()
+		line = replaceDSMLMarkers(line)
 
 		if strings.HasPrefix(line, "data: ") {
 			data := strings.TrimPrefix(line, "data: ")

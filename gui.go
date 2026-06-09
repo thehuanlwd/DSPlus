@@ -46,6 +46,8 @@ func handleGUI(w http.ResponseWriter, r *http.Request, l *Logger, cfg *Config) {
 		handleAPIGetConfig(w, r, cfg)
 	case path == "/config" && r.Method == "POST":
 		handleAPISaveConfig(w, r, cfg)
+	case path == "/restart" && r.Method == "POST":
+		handleAPIRestart(w, r)
 	default:
 		http.NotFound(w, r)
 	}
@@ -53,11 +55,24 @@ func handleGUI(w http.ResponseWriter, r *http.Request, l *Logger, cfg *Config) {
 
 func handleAPIStatus(w http.ResponseWriter, r *http.Request, l *Logger, cfg *Config) {
 	stats := l.Stats()
+	reasons := []string{}
+	restartRequired := false
+	if cfg.Port != runtimePort {
+		restartRequired = true
+		reasons = append(reasons, "服务端口")
+	}
+	if cfg.LANAccess != runtimeLANAccess {
+		restartRequired = true
+		reasons = append(reasons, "局域网/WSL 访问")
+	}
+
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"port":     cfg.Port,
-		"total":    stats["total"],
-		"today":    stats["today"],
-		"max_logs": l.maxSize,
+		"port":             cfg.Port,
+		"total":            stats["total"],
+		"today":            stats["today"],
+		"max_logs":         l.maxSize,
+		"restart_required": restartRequired,
+		"restart_reasons":  reasons,
 	})
 }
 
@@ -160,6 +175,7 @@ func handleAPISaveConfig(w http.ResponseWriter, r *http.Request, cfg *Config) {
 	changed = setBoolField(updates, "anti_loop_enabled", &cfg.AntiLoopEnabled) || changed
 	changed = setBoolField(updates, "debug_mode", &cfg.DebugMode) || changed
 	changed = setBoolField(updates, "auto_reasoning_content", &cfg.AutoReasoningContent) || changed
+	changed = setBoolField(updates, "lan_access", &cfg.LANAccess) || changed
 	changed = setIntField(updates, "max_tokens_custom", &cfg.MaxTokensCustom, 0) || changed
 	changed = setIntField(updates, "antiloop_check_tokens", &cfg.AntiLoopCheckTokens, 0) || changed
 
@@ -168,10 +184,35 @@ func handleAPISaveConfig(w http.ResponseWriter, r *http.Request, cfg *Config) {
 			http.Error(w, `{"error":"failed to save config"}`, http.StatusInternalServerError)
 			return
 		}
-		json.NewEncoder(w).Encode(map[string]string{"status": "saved"})
+		reasons := []string{}
+		restartRequired := false
+		if cfg.Port != runtimePort {
+			restartRequired = true
+			reasons = append(reasons, "服务端口")
+		}
+		if cfg.LANAccess != runtimeLANAccess {
+			restartRequired = true
+			reasons = append(reasons, "局域网/WSL 访问")
+		}
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"status":           "saved",
+			"restart_required": restartRequired,
+			"restart_reasons":  reasons,
+		})
 	} else {
 		json.NewEncoder(w).Encode(map[string]string{"status": "unchanged"})
 	}
+}
+
+func handleAPIRestart(w http.ResponseWriter, r *http.Request) {
+	if appRestartCh != nil {
+		select {
+		case appRestartCh <- struct{}{}:
+		default:
+		}
+	}
+	json.NewEncoder(w).Encode(map[string]string{"status": "restarting"})
 }
 
 // ── Config field update helpers ────────────────────────────────────────────

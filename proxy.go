@@ -359,6 +359,7 @@ func (s *ProxyServer) forwardStream(w http.ResponseWriter, resp *http.Response, 
 
 	for scanner.Scan() {
 		line := scanner.Text()
+		line = replaceDSMLMarkers(line)
 		if _, err := w.Write([]byte(line + "\n")); err != nil {
 			log.Printf("[proxy] forwardStream write error: %v", err)
 			break
@@ -394,15 +395,19 @@ func (s *ProxyServer) forwardStream(w http.ResponseWriter, resp *http.Response, 
 }
 
 func (s *ProxyServer) forwardBuffered(w http.ResponseWriter, resp *http.Response, logID int64) {
-	var buf bytes.Buffer
-	tee := io.TeeReader(resp.Body, &buf)
-	io.Copy(w, tee)
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		log.Printf("[proxy] forwardBuffered read error: %v", err)
+		return
+	}
+	bodyBytes = replaceDSMLMarkersBytes(bodyBytes)
+	w.Write(bodyBytes)
 
-	if u := extractUsageFromBody(buf.String()); u != nil {
+	if u := extractUsageFromBody(string(bodyBytes)); u != nil {
 		s.logger.UpdateTokenUsage(logID, u)
 	}
 	if s.config.VerboseLogging {
-		s.logger.UpdateLastResponse(logID, truncateBody(buf.String()))
+		s.logger.UpdateLastResponse(logID, truncateBody(string(bodyBytes)))
 	}
 }
 
@@ -465,6 +470,7 @@ func (s *ProxyServer) forwardStreamWithAntiLoop(
 		watchdogStop = resetProgressWatchdog(watchdogStop)
 
 		line := scanner.Text()
+		line = replaceDSMLMarkers(line)
 
 		if !strings.HasPrefix(line, "data: ") {
 			if _, err := w.Write([]byte(line + "\n")); err != nil {

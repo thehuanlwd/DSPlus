@@ -9,6 +9,7 @@ import (
 type Config struct {
 	APIKey                 string `json:"api_key"`
 	Port                   int    `json:"port"`
+	LANAccess              bool   `json:"lan_access"`
 	OpenAIUpstream         string `json:"openai_upstream"`
 	AnthropicUpstream      string `json:"anthropic_upstream"`
 	VerboseLogging         bool   `json:"verbose_logging"`
@@ -32,6 +33,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		Port:                  8188,
+		LANAccess:             false,
 		OpenAIUpstream:        "https://api.deepseek.com",
 		AnthropicUpstream:     "https://api.deepseek.com/anthropic",
 		VerboseLogging:        true,

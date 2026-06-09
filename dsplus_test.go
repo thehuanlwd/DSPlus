@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -479,3 +481,86 @@ func TestCondStr(t *testing.T) {
 		t.Error("false should return b")
 	}
 }
+
+func TestReplaceFullWidthVerticalBars(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{
+			input:    `data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"｜｜DSML｜｜"}}`,
+			expected: `data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"||DSML||"}}`,
+		},
+		{
+			input:    `data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"</｜｜DSML｜｜tool_calls>"}}`,
+			expected: `data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"</||DSML||tool_calls>"}}`,
+		},
+		{
+			input:    `data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"\uff5c\uff5cDSML\uff5c\uff5c"}}`,
+			expected: `data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"||DSML||"}}`,
+		},
+		{
+			input:    `data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"</\uFF5C\uFF5CDSML\uFF5C\uFF5Ctool_calls>"}}`,
+			expected: `data: {"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"</||DSML||tool_calls>"}}`,
+		},
+		{
+			input:    `some ｜ text ｜`,
+			expected: `some | text |`,
+		},
+		{
+			input:    `some \uff5c text \uFF5C`,
+			expected: `some | text |`,
+		},
+		{
+			input:    `normal text`,
+			expected: `normal text`,
+		},
+	}
+
+	for _, tc := range tests {
+		got := replaceDSMLMarkers(tc.input)
+		if got != tc.expected {
+			t.Errorf("Replace failed: got %q, want %q", got, tc.expected)
+		}
+	}
+}
+
+func TestHandleAPISaveConfig_LANAccessRequiresRestart(t *testing.T) {
+	oldPort := runtimePort
+	oldLANAccess := runtimeLANAccess
+	oldRestartCh := appRestartCh
+	defer func() {
+		runtimePort = oldPort
+		runtimeLANAccess = oldLANAccess
+		appRestartCh = oldRestartCh
+	}()
+
+	cfg := DefaultConfig()
+	cfg.Port = 8188
+	cfg.LANAccess = false
+	setRuntimeState(cfg.Port, cfg.LANAccess)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/config", strings.NewReader(`{"port":8188,"lan_access":true}`))
+	rec := httptest.NewRecorder()
+	handleAPISaveConfig(rec, req, &cfg)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]interface{}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp["status"] != "saved" {
+		t.Fatalf("status = %v", resp["status"])
+	}
+	if resp["restart_required"] != true {
+		t.Fatalf("restart_required = %v", resp["restart_required"])
+	}
+	reasons, ok := resp["restart_reasons"].([]interface{})
+	if !ok || len(reasons) != 1 || reasons[0] != "局域网/WSL 访问" {
+		t.Fatalf("restart_reasons = %#v", resp["restart_reasons"])
+	}
+}
+
+

@@ -22,3 +22,5 @@ Desktop.ini
 *.swp
 *.swo
 *~
+.tmp_repos/
+.gocache/

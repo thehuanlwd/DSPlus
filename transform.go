@@ -1,12 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"strings"
 )
 
-// ── Shared helpers ───────────────────────────────────────────────────────────
-
-// userMessageIndices returns the first and last user-role message positions
 // in the messages slice.  Returns (-1, -1) if no user message is found.
 func userMessageIndices(messages []interface{}) (first, last int) {
 	first = -1
@@ -224,3 +222,29 @@ func extractAnthropicSystem(system interface{}) string {
 		return ""
 	}
 }
+
+// replaceDSMLMarkers replaces all forms of full-width DSML markers (both literal and Unicode escaped) with half-width markers.
+func replaceDSMLMarkers(input string) string {
+	if strings.Contains(input, "｜") || strings.Contains(input, "\\u") || strings.Contains(input, "\\uFF") || strings.Contains(input, "\\uff") {
+		// Replace escaped forms first
+		input = strings.ReplaceAll(input, `\uff5c\uff5cDSML\uff5c\uff5c`, "||DSML||")
+		input = strings.ReplaceAll(input, `\uFF5C\uFF5CDSML\uFF5C\uFF5C`, "||DSML||")
+		input = strings.ReplaceAll(input, `\uff5c`, "|")
+		input = strings.ReplaceAll(input, `\uFF5C`, "|")
+
+		// Replace literal forms
+		input = strings.ReplaceAll(input, "｜｜DSML｜｜", "||DSML||")
+		input = strings.ReplaceAll(input, "｜", "|")
+	}
+	return input
+}
+
+// replaceDSMLMarkersBytes replaces all forms of full-width DSML markers in a byte slice.
+func replaceDSMLMarkersBytes(b []byte) []byte {
+	if bytes.Contains(b, []byte("｜")) || bytes.Contains(b, []byte("\\u")) {
+		s := replaceDSMLMarkers(string(b))
+		return []byte(s)
+	}
+	return b
+}
+

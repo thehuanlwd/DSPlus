@@ -106,6 +106,10 @@ main { flex: 1; overflow: auto; }
 .toast.show { opacity: 1; transform: translateY(0); }
 .toast.error { background: var(--red); color: #fff; }
 
+.restart-banner { margin-top: 14px; padding: 12px 14px; background: rgba(210,153,29,0.12); border: 1px solid rgba(210,153,29,0.45); border-radius: 8px; color: var(--text); font-size: 12px; }
+.restart-banner .restart-title { color: var(--yellow); font-weight: 600; margin-bottom: 4px; }
+.restart-banner .restart-actions { margin-top: 10px; }
+
 .tokens-col { text-align: right; font-variant-numeric: tabular-nums; }
 .tokens-new { color: var(--blue); }
 .tokens-low { color: var(--text2); }
@@ -263,6 +267,16 @@ main { flex: 1; overflow: auto; }
       </div>
       <div class="toggle-row">
         <div>
+          <div class="toggle-label">允许局域网/WSL 访问</div>
+          <div class="toggle-desc">开启后其他设备或 WSL 可通过 Windows 主机 IP 访问，重启服务后生效</div>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="cfgLanAccess">
+          <span class="slider"></span>
+        </label>
+      </div>
+      <div class="toggle-row">
+        <div>
           <div class="toggle-label">reasoning_content 自动补全</div>
           <div class="toggle-desc">对含 tool_calls 但缺 reasoning_content 的 assistant 消息自动注入空字符串，避免 DeepSeek V4 抛出 missing reasoning_content 错误</div>
         </div>
@@ -335,6 +349,13 @@ main { flex: 1; overflow: auto; }
       <div style="margin-top:24px">
         <button class="btn-primary" onclick="saveSettings()">保存配置</button>
         <button class="btn-secondary" onclick="resetSettings()">恢复默认</button>
+      </div>
+      <div class="restart-banner" id="restartBanner" style="display:none">
+        <div class="restart-title">有设置需要重启服务后生效</div>
+        <div id="restartReasonText">设置已保存，重启服务后生效。</div>
+        <div class="restart-actions">
+          <button class="btn-primary" id="btnRestartService" onclick="restartService()">重启服务</button>
+        </div>
       </div>
     </div>
   </section>
@@ -631,6 +652,7 @@ async function loadSettings() {
     const cfg = await r.json();
     $('cfgAPIKey').value = cfg.api_key || '';
     $('cfgPort').value = cfg.port || 8188;
+    $('cfgLanAccess').checked = cfg.lan_access || false;
     $('cfgOpenAIUpstream').value = cfg.openai_upstream || 'https://api.deepseek.com';
     $('cfgAnthropicUpstream').value = cfg.anthropic_upstream || 'https://api.deepseek.com/anthropic';
     $('cfgVerbose').checked = cfg.verbose_logging || false;
@@ -654,6 +676,7 @@ async function loadSettings() {
     $('cfgAntiloopCheckTokens').value = cfg.antiloop_check_tokens || 0;
     $('cfgDebugMode').checked = cfg.debug_mode || false;
     $('cfgAutoReasoning').checked = cfg.auto_reasoning_content !== false;
+    setRestartBanner(cfg.restart_required, cfg.restart_reasons);
   } catch(e) {
     showToast('加载配置失败', true);
   }
@@ -663,6 +686,7 @@ async function saveSettings() {
   const payload = {
     api_key: $('cfgAPIKey').value,
     port: parseInt($('cfgPort').value) || 8188,
+    lan_access: $('cfgLanAccess').checked,
     openai_upstream: $('cfgOpenAIUpstream').value,
     anthropic_upstream: $('cfgAnthropicUpstream').value,
     verbose_logging: $('cfgVerbose').checked,
@@ -690,10 +714,11 @@ async function saveSettings() {
       body: JSON.stringify(payload)
     });
     const resp = await r.json();
+    setRestartBanner(resp.restart_required, resp.restart_reasons);
     if (resp.status === 'saved') {
-      showToast('配置已保存');
+      showToast(resp.restart_required ? '配置已保存，重启后生效' : '配置已保存');
     } else {
-      showToast('配置未变更', true);
+      showToast(resp.restart_required ? '配置已保存，等待重启' : '配置未变更', true);
     }
   } catch(e) {
     showToast('保存失败', true);
@@ -703,6 +728,7 @@ async function saveSettings() {
 function resetSettings() {
   $('cfgAPIKey').value = '';
   $('cfgPort').value = 8188;
+  $('cfgLanAccess').checked = false;
   $('cfgOpenAIUpstream').value = 'https://api.deepseek.com';
   $('cfgAnthropicUpstream').value = 'https://api.deepseek.com/anthropic';
   $('cfgVerbose').checked = false;
@@ -726,6 +752,43 @@ function resetSettings() {
   $('cfgAntiloopCheckTokens').value = 0;
   $('cfgDebugMode').checked = false;
   $('cfgAutoReasoning').checked = true;
+}
+
+function setRestartBanner(visible, reasons) {
+  const banner = $('restartBanner');
+  if (!banner) return;
+  banner.style.display = visible ? '' : 'none';
+  if (visible) {
+    const names = Array.isArray(reasons) && reasons.length ? reasons.join('、') : '部分设置';
+    $('restartReasonText').textContent = names + '已保存，重启服务后生效。';
+  }
+  const btn = $('btnRestartService');
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = '重启服务';
+  }
+}
+
+async function restartService() {
+  const btn = $('btnRestartService');
+  const nextPort = parseInt($('cfgPort').value) || 8188;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '正在重启...';
+  }
+  try {
+    await fetch('/api/restart', { method: 'POST' });
+    showToast('正在重启服务...');
+    setTimeout(() => {
+      location.href = 'http://127.0.0.1:' + nextPort + '/';
+    }, 1800);
+  } catch(e) {
+    showToast('重启请求失败，请手动重启 DSPlus', true);
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '重启服务';
+    }
+  }
 }
 
 function showToast(msg, isError) {
