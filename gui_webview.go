@@ -3,6 +3,9 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
+	"runtime"
 	"syscall"
 	"unicode/utf16"
 	"unsafe"
@@ -70,6 +73,7 @@ var (
 	pDestroyIcon         = user32.NewProc("DestroyIcon")
 
 	pShellNotifyIconW = shell32.NewProc("Shell_NotifyIconW")
+	pExtractIconW     = shell32.NewProc("ExtractIconW")
 
 	mainHwnd     uintptr
 	oldWndProc   uintptr
@@ -81,6 +85,15 @@ var (
 )
 
 func openGUI(url string, shutdown chan<- struct{}) {
+	runtime.LockOSThread()
+
+	// 设置 WebView2 缓存目录，防止由于工作目录无写入权限导致卡死
+	if appData := os.Getenv("APPDATA"); appData != "" {
+		udf := filepath.Join(appData, "DSPlus", "WebView2")
+		_ = os.MkdirAll(udf, 0755)
+		os.Setenv("WEBVIEW2_USER_DATA_FOLDER", udf)
+	}
+
 	w := webview.New(true)
 	defer w.Destroy()
 	w.SetTitle("DSPlus - DeepSeek V4 Proxy")
@@ -129,6 +142,17 @@ func delTray() {
 }
 
 func makeIcon() uintptr {
+	exePath, err := os.Executable()
+	if err == nil {
+		exePathPtr, err := syscall.UTF16PtrFromString(exePath)
+		if err == nil {
+			h, _, _ := pExtractIconW.Call(0, uintptr(unsafe.Pointer(exePathPtr)), 0)
+			if h > 1 {
+				return h
+			}
+		}
+	}
+
 	andMask := make([]byte, 128)
 	xorMask := make([]byte, 32*32*4)
 

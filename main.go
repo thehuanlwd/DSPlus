@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -47,6 +48,10 @@ func main() {
 		}
 
 		initTrace()
+		svc := InitAnalysisService(&cfg)
+		if svc != nil {
+			svc.config = &cfg
+		}
 		logger := NewLogger(2000)
 		proxy := NewProxyServer(&cfg, logger)
 		initWSHub(logger)
@@ -58,6 +63,11 @@ func main() {
 		}
 		addr := fmt.Sprintf("%s:%d", bindHost, cfg.Port)
 
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			log.Fatalf("[server] startup failed: failed to listen on %s: %v", addr, err)
+		}
+
 		server := &http.Server{
 			Addr:    addr,
 			Handler: proxy,
@@ -68,7 +78,7 @@ func main() {
 			log.Printf("[server] DSPlus starting on %s", addr)
 			log.Printf("[server] OpenAI upstream: %s", cfg.OpenAIUpstream)
 			log.Printf("[server] Anthropic upstream: %s", cfg.AnthropicUpstream)
-			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			if err := server.Serve(ln); err != nil && err != http.ErrServerClosed {
 				log.Fatalf("[server] failed to start: %v", err)
 			}
 		}()

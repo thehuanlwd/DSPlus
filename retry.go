@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -588,6 +589,31 @@ func (s *ProxyServer) callAntiLoopAnalyzerWith(analysisBody []byte, pathLabel st
 	if err := json.Unmarshal([]byte(content), &analysis); err != nil {
 		return nil, fmt.Errorf("parse analysis JSON: %w (content: %s)", err, truncateBody(content))
 	}
+
+	// 提交分析器 TraceEvent
+	analyzerEventID := "ana_" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	var analyzerBody map[string]interface{}
+	json.Unmarshal(analysisBody, &analyzerBody)
+	
+	GetAnalysisService().SubmitEvent(&TraceEvent{
+		ID:        analyzerEventID,
+		Time:      startTime,
+		LogID:     analyzerLogID,
+		Phase:     "analyzer",
+		Format:    "openai",
+		Route:     "/chat/completions (" + pathLabel + ")",
+		Status:    resp.StatusCode,
+		LatencyMs: time.Since(startTime).Milliseconds(),
+		Model:     "deepseek-chat",
+		Upstream:  s.config.OpenAIUpstream,
+		Request:   buildRequestMeta(analyzerBody, "openai", false, false),
+		Response: ResponseMeta{
+			AnalyzerJudgment: analysis.Judgment,
+			FinishReason:     "stop",
+		},
+		RawRequest:  string(analysisBody),
+		RawResponse: string(respBytes),
+	})
 
 	return &analysis, nil
 }

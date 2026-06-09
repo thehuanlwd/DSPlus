@@ -6,6 +6,25 @@
 <title>DSPlus - DeepSeek V4 Proxy</title>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+/* 全局深色主题滚动条 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--bg3);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border);
+}
+html {
+  scrollbar-color: var(--bg3) var(--bg);
+  scrollbar-width: thin;
+}
 :root {
   --bg: #0d1117; --bg2: #161b22; --bg3: #21262d; --border: #30363d;
   --text: #c9d1d9; --text2: #8b949e; --green: #3fb950; --red: #f85149;
@@ -102,6 +121,8 @@ main { flex: 1; overflow: auto; }
 .btn-primary:hover { opacity: 0.9; }
 .btn-secondary { padding: 8px 20px; background: var(--bg3); color: var(--text); border: 1px solid var(--border); border-radius: 6px; font-size: 13px; cursor: pointer; margin-left: 8px; }
 .btn-secondary:hover { background: var(--border); }
+.btn-danger { padding: 8px 16px; background: var(--red); color: #fff; border: none; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity 0.2s; }
+.btn-danger:hover { opacity: 0.9; }
 .toast { position: fixed; bottom: 20px; right: 20px; padding: 10px 20px; background: var(--green); color: #000; border-radius: 8px; font-size: 13px; font-weight: 500; opacity: 0; transform: translateY(10px); transition: all 0.3s; pointer-events: none; z-index: 100; }
 .toast.show { opacity: 1; transform: translateY(0); }
 .toast.error { background: var(--red); color: #fff; }
@@ -118,6 +139,65 @@ main { flex: 1; overflow: auto; }
 .tooltip-wrap { position: relative; cursor: help; }
 .tooltip-wrap .tt { visibility: hidden; opacity: 0; position: absolute; bottom: calc(100% + 4px); left: 50%; transform: translateX(-50%); background: var(--bg3); color: var(--text); padding: 6px 10px; border-radius: 6px; font-size: 11px; white-space: nowrap; z-index: 10; pointer-events: none; border: 1px solid var(--border); transition: opacity 0.15s; max-width: 320px; overflow: hidden; text-overflow: ellipsis; }
 .tooltip-wrap:hover .tt { visibility: visible; opacity: 1; }
+
+/* ── 分析页面双栏结构 ── */
+.analysis-layout { display: flex; height: calc(100vh - 48px); margin: -20px; overflow: hidden; }
+.analysis-sidebar { width: 320px; border-right: 1px solid var(--border); background: var(--bg2); display: flex; flex-direction: column; flex-shrink: 0; height: 100%; }
+.sidebar-header { padding: 12px 16px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+.sidebar-header h3 { font-size: 13px; font-weight: 600; color: var(--text); }
+.btn-refresh { background: none; border: none; color: var(--blue); cursor: pointer; font-size: 12px; outline: none; }
+#sessionListContainer { flex: 1; overflow-y: auto; height: 100%; }
+
+.session-item { padding: 12px 16px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background 0.15s; text-align: left; }
+.session-item:hover { background: var(--bg3); }
+.session-item.active { background: var(--bg3); border-left: 3px solid var(--blue); }
+.session-item .session-title { font-size: 12px; font-weight: 600; color: var(--blue); margin-bottom: 4px; display: flex; justify-content: space-between; }
+.session-item .session-meta { font-size: 10px; color: var(--text2); margin-bottom: 6px; }
+.session-item .session-preview { font-size: 11px; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.analysis-main { flex: 1; display: flex; flex-direction: column; overflow-y: auto; background: var(--bg); padding: 20px; height: 100%; }
+.analysis-main-empty { flex: 1; display: flex; align-items: center; justify-content: center; background: var(--bg); color: var(--text2); height: 100%; }
+
+/* 摘要卡片 */
+.analysis-summary-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 8px; padding: 16px; margin-bottom: 20px; text-align: left; }
+.summary-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+.summary-top h4 { font-size: 14px; font-weight: 600; color: var(--text); }
+.summary-stats { display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 12px; font-size: 12px; }
+.stat-item { color: var(--text2); }
+.stat-item span { color: var(--text); font-weight: 600; }
+.summary-desc-wrapper { font-size: 12px; line-height: 1.6; border-top: 1px dashed var(--border); padding-top: 10px; }
+.summary-text-collapsed { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; text-overflow: ellipsis; color: var(--text2); }
+.summary-text-full { color: var(--text); }
+.btn-link { background: none; border: none; color: var(--blue); cursor: pointer; font-size: 11px; margin-top: 4px; padding: 0; outline: none; }
+.btn-sm { padding: 4px 10px; font-size: 11px; }
+
+/* 聊天气泡时间线 */
+.chat-timeline { display: flex; flex-direction: column; gap: 16px; }
+.chat-bubble { max-width: 85%; padding: 14px 18px; border-radius: 12px; line-height: 1.6; font-size: 13px; position: relative; text-align: left; }
+.chat-bubble.user { background: var(--bg2); border: 1px solid var(--border); align-self: flex-end; color: var(--text); border-bottom-right-radius: 2px; }
+.chat-bubble.assistant { background: rgba(88,166,255,0.04); border: 1px solid rgba(88,166,255,0.2); align-self: flex-start; color: var(--text); border-bottom-left-radius: 2px; }
+
+.bubble-meta { font-size: 10px; color: var(--text2); margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center; }
+.jump-raw-btn { color: var(--blue); cursor: pointer; font-size: 10px; text-decoration: underline; margin-left: 8px; font-weight: normal; }
+.jump-raw-btn:hover { color: #8bc3fa; }
+
+/* 深度思考折叠条 */
+.reasoning-toggle { background: var(--bg3); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; font-size: 12px; color: var(--text2); cursor: pointer; display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; user-select: none; }
+.reasoning-toggle:hover { color: var(--text); }
+.reasoning-content { background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 12px; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 11px; color: var(--text2); white-space: pre-wrap; display: none; margin-bottom: 12px; max-height: 400px; overflow-y: auto; word-break: break-all; }
+.reasoning-content.show { display: block; }
+
+/* 系统干预卡片 */
+.system-notice { width: 100%; max-width: 90%; align-self: center; background: rgba(210,153,29,0.06); border: 1px solid rgba(210,153,29,0.25); border-radius: 8px; padding: 12px 16px; font-size: 12px; color: var(--text); margin: 6px 0; text-align: left; }
+.system-notice.danger { background: rgba(248,81,73,0.06); border-color: rgba(248,81,73,0.25); }
+.system-notice.success { background: rgba(63,185,80,0.06); border-color: rgba(63,185,80,0.25); }
+.system-notice-title { font-weight: 600; margin-bottom: 4px; display: flex; justify-content: space-between; align-items: center; }
+
+/* 次要处理折叠面板 */
+.minor-details { font-size: 11px; color: var(--text2); border: 1px dashed var(--border); border-radius: 4px; padding: 6px 10px; margin-top: 8px; background: rgba(255,255,255,0.01); }
+.minor-toggle { cursor: pointer; user-select: none; display: flex; justify-content: space-between; }
+.minor-content { display: none; margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border); font-family: 'Cascadia Code', monospace; font-size: 10px; white-space: pre-wrap; word-break: break-all; }
+.minor-content.show { display: block; }
 </style>
 </head>
 <body>
@@ -126,6 +206,7 @@ main { flex: 1; overflow: auto; }
   <h1>DSPlus</h1>
   <nav>
     <button class="active" data-page="dashboard">仪表盘</button>
+    <button data-page="analysis">分析</button>
     <button data-page="settings">设置</button>
   </nav>
 </header>
@@ -174,6 +255,60 @@ main { flex: 1; overflow: auto; }
         <button onclick="closeDetail()">✕</button>
       </div>
       <div id="detailContent"></div>
+    </div>
+  </section>
+
+  <section id="analysis" class="page">
+    <div class="analysis-layout">
+      <!-- 左栏：请求列表 -->
+      <div class="analysis-sidebar">
+        <div class="sidebar-header">
+          <h3>请求历史</h3>
+          <button class="btn-refresh" onclick="loadAnalysisSessions()">刷新</button>
+        </div>
+        <div id="sessionListContainer">
+          <div class="empty-state">读取中...</div>
+        </div>
+      </div>
+
+      <!-- 右栏：请求详细 -->
+      <div class="analysis-main" id="analysisMainPanel" style="display:none">
+        <!-- 请求摘要及统计 -->
+        <div class="analysis-summary-card">
+          <div class="summary-top">
+            <h4 id="ansSessionId">请求详情</h4>
+            <button class="btn-primary btn-sm" onclick="exportSessionMarkdown()">导出 Markdown</button>
+          </div>
+          <div class="summary-stats">
+            <span class="stat-item">请求数: <span id="ansRequestCount">--</span></span>
+            <span class="stat-item">Tokens: <span id="ansTokens">--</span></span>
+            <span class="stat-item">缓存命中: <span id="ansCacheRatio">--</span></span>
+            <span class="stat-item">重试: <span id="ansRetries" class="badge badge-antiloop-retry">0</span></span>
+            <span class="stat-item">异常: <span id="ansErrors" class="badge badge-no">0</span></span>
+          </div>
+          
+          <!-- Tools 展开区域 -->
+          <div id="ansToolsWrapper" style="display:none; margin-top: 12px; border-top: 1px dashed var(--border); padding-top: 10px;">
+            <div class="detail-label" onclick="toggleToolsFold()" style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--text2);">
+              <span id="toolsArrow" class="arrow collapsed" style="display: inline-block; margin-right: 4px; transition: transform 0.15s; font-size: 10px;">▼</span>
+              <span>加载的 Tools (点击展开)</span>
+            </div>
+            <div id="ansToolsContent" style="display:none; margin-top: 6px; padding: 8px 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; font-family: 'Cascadia Code', 'Fira Code', monospace; font-size: 11px; white-space: pre-wrap; word-break: break-all;">
+            </div>
+          </div>
+        </div>
+
+        <!-- 对话聊天时间线 -->
+        <div class="chat-timeline" id="chatTimeline"></div>
+      </div>
+
+      <!-- 右栏未选中状态 -->
+      <div class="analysis-main-empty" id="analysisMainEmpty">
+        <div class="empty-state">
+          <div class="icon">💬</div>
+          <p>请在左侧选择一个请求查看详情</p>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -346,6 +481,51 @@ main { flex: 1; overflow: auto; }
         </label>
       </div>
 
+      <div class="toggle-row">
+        <div>
+          <div class="toggle-label">启用会话分析服务</div>
+          <div class="toggle-desc">对代理流量进行高层会话（Session）维度的聚合与分析</div>
+        </div>
+        <label class="toggle">
+          <input type="checkbox" id="cfgAnalysisEnabled" checked>
+          <span class="slider"></span>
+        </label>
+      </div>
+      
+      <div id="analysisSubSettings" style="display:none; padding-left: 28px; border-left: 2px solid var(--border); margin-left: 8px;">
+        <div class="toggle-row">
+          <div>
+            <div class="toggle-label">将分析结果持久化至本地</div>
+            <div class="toggle-desc">将分析的会话以 JSONL 文件形式保存至本地存储</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="cfgAnalysisPersistence">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="toggle-row" id="analysisRawBodiesRow" style="display:none">
+          <div>
+            <div class="toggle-label">持久化原始请求/响应体 (含隐私敏感信息)</div>
+            <div class="toggle-desc" style="color:var(--orange)">⚠️ 开启后将完整保存会话中所有请求与模型的明文对话内容，请注意商业信息保护</div>
+          </div>
+          <label class="toggle">
+            <input type="checkbox" id="cfgAnalysisPersistRaw">
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="form-group" style="margin-top: 14px; margin-bottom: 14px;">
+          <label style="font-size:12px; color: var(--text2)">分析日志保留天数</label>
+          <div style="display:flex; gap:10px; align-items:center;">
+            <input type="number" id="cfgAnalysisRetentionDays" min="1" max="365" value="7" style="flex:1;padding:8px 12px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none">
+            <button class="btn-danger" onclick="clearAnalysisHistory()" style="flex-shrink:0;">清除历史记录</button>
+          </div>
+        </div>
+        <div class="form-group" style="margin-bottom: 14px;">
+          <label style="font-size:12px; color: var(--text2)">会话空闲间隔判断阈值 (分钟)</label>
+          <input type="number" id="cfgAnalysisSessionGap" min="5" max="1440" value="30" style="width:100%;padding:8px 12px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:13px;outline:none">
+        </div>
+      </div>
+
       <div style="margin-top:24px">
         <button class="btn-primary" onclick="saveSettings()">保存配置</button>
         <button class="btn-secondary" onclick="resetSettings()">恢复默认</button>
@@ -379,6 +559,7 @@ function init() {
       const pageId = btn.dataset.page;
       $(pageId).classList.add('active');
       if (pageId === 'settings') loadSettings();
+      if (pageId === 'analysis') loadAnalysisSessions();
     });
   });
 
@@ -398,6 +579,12 @@ function init() {
   });
   $('cfgAntiloopRetryThinking').addEventListener('change', () => {
     $('antiloopEffortGroup').style.display = $('cfgAntiloopRetryThinking').value === 'enabled' ? '' : 'none';
+  });
+  $('cfgAnalysisEnabled').addEventListener('change', () => {
+    $('analysisSubSettings').style.display = $('cfgAnalysisEnabled').checked ? '' : 'none';
+  });
+  $('cfgAnalysisPersistence').addEventListener('change', () => {
+    $('analysisRawBodiesRow').style.display = $('cfgAnalysisPersistence').checked ? '' : 'none';
   });
   connectWS();
   loadStatus();
@@ -533,21 +720,25 @@ async function showDetail(id) {
       延迟: ${e.latency_ms}ms
       是否重组: ${e.transformed ? '是' : '否'}
       包含System Prompt: ${e.has_system_prompt ? '是' : '否'}`;
-    addDetailSection(content, '基本信息', info.trim());
+    addDetailSection(content, '基本信息', info.trim(), true);
 
     if (e.response_headers && Object.keys(e.response_headers).length > 0) {
       const hdrText = Object.entries(e.response_headers).map(([k,v]) => `${k}: ${v}`).join('\n');
-      addDetailSection(content, '响应头', hdrText);
+      addDetailSection(content, '响应头', hdrText, true);
     }
 
     if (e.original_body) {
-      addDetailSection(content, '原始请求体', tryPretty(e.original_body));
+      addDetailSection(content, '原始请求体', tryPretty(e.original_body), true);
     }
     if (e.transformed_body) {
-      addDetailSection(content, '重组后请求体', tryPretty(e.transformed_body));
+      addDetailSection(content, '重组后请求体', tryPretty(e.transformed_body), true);
     }
     if (e.response_body) {
-      addDetailSection(content, 'API响应体', tryPretty(e.response_body));
+      addDetailSection(content, 'API响应体', tryPretty(e.response_body), true);
+      const finalReply = parseFinalReply(e.response_body, e.format);
+      if (finalReply) {
+        addDetailSection(content, '最终回复', finalReply, true);
+      }
     }
 
     if (!e.original_body && !e.transformed_body && !e.response_body) {
@@ -561,13 +752,14 @@ async function showDetail(id) {
   }
 }
 
-function addDetailSection(container, label, body) {
+function addDetailSection(container, label, body, defaultCollapsed = false) {
   const div = document.createElement('div');
-  div.className = 'detail-section';
+  div.className = 'detail-section' + (defaultCollapsed ? ' collapsed' : '');
   const id = 'detail-' + Date.now() + '-' + Math.random().toString(36).slice(2,6);
+  const arrowClass = defaultCollapsed ? 'arrow collapsed' : 'arrow';
   div.innerHTML =
     '<div class="detail-label" onclick="this.parentElement.classList.toggle(\'collapsed\');this.querySelector(\'.arrow\').classList.toggle(\'collapsed\')">' +
-    '<span class="arrow">&#9662;</span>' + label +
+    '<span class="' + arrowClass + '">&#9662;</span>' + label +
     '</div>' +
     '<button class="copy-btn" onclick="copySection(\'' + id + '\')">复制</button>' +
     '<div class="detail-content" id="' + id + '">' + escapeHtml(body) + '</div>';
@@ -597,6 +789,69 @@ function tryPretty(str) {
   } catch(e) {
     return str;
   }
+}
+
+function parseFinalReply(rawText, format) {
+  if (!rawText) return "";
+  let reasoning = "";
+  let content = "";
+  
+  if (rawText.includes("data: ")) {
+    const lines = rawText.split("\n");
+    for (let line of lines) {
+      line = line.trim();
+      if (line.startsWith("data: ")) {
+        const dataStr = line.slice(6);
+        if (dataStr === "[DONE]") continue;
+        try {
+          const chunk = JSON.parse(dataStr);
+          if (chunk.choices && chunk.choices.length > 0) {
+            const delta = chunk.choices[0].delta;
+            if (delta) {
+              if (delta.reasoning_content) {
+                reasoning += delta.reasoning_content;
+              }
+              if (delta.content) {
+                content += delta.content;
+              }
+            }
+          }
+          if (chunk.type === "content_block_delta") {
+            if (chunk.delta && chunk.delta.text) {
+              content += chunk.delta.text;
+            }
+          }
+        } catch (err) {}
+      }
+    }
+  } else {
+    try {
+      const data = JSON.parse(rawText);
+      if (data.choices && data.choices.length > 0) {
+        const msg = data.choices[0].message;
+        if (msg) {
+          if (msg.reasoning_content) reasoning = msg.reasoning_content;
+          if (msg.content) content = msg.content;
+        }
+      }
+      if (Array.isArray(data.content)) {
+        for (const item of data.content) {
+          if (item.type === "text" && item.text) {
+            content += item.text;
+          }
+        }
+      }
+    } catch (err) {}
+  }
+
+  let finalStr = "";
+  if (reasoning) {
+    finalStr += "<think>\n" + reasoning + "\n</think>\n\n";
+  }
+  if (content) {
+    finalStr += content;
+  }
+  return finalStr;
 }
 
 function closeDetail() {
@@ -676,6 +931,15 @@ async function loadSettings() {
     $('cfgAntiloopCheckTokens').value = cfg.antiloop_check_tokens || 0;
     $('cfgDebugMode').checked = cfg.debug_mode || false;
     $('cfgAutoReasoning').checked = cfg.auto_reasoning_content !== false;
+
+    $('cfgAnalysisEnabled').checked = cfg.analysis_enabled !== false;
+    $('analysisSubSettings').style.display = cfg.analysis_enabled !== false ? '' : 'none';
+    $('cfgAnalysisPersistence').checked = cfg.analysis_persistence || false;
+    $('analysisRawBodiesRow').style.display = cfg.analysis_persistence ? '' : 'none';
+    $('cfgAnalysisPersistRaw').checked = cfg.analysis_persist_raw_bodies || false;
+    $('cfgAnalysisRetentionDays').value = cfg.analysis_retention_days || 7;
+    $('cfgAnalysisSessionGap').value = cfg.analysis_session_gap_min || 30;
+
     setRestartBanner(cfg.restart_required, cfg.restart_reasons);
   } catch(e) {
     showToast('加载配置失败', true);
@@ -705,6 +969,11 @@ async function saveSettings() {
     antiloop_check_tokens: parseInt($('cfgAntiloopCheckTokens').value) || 0,
     debug_mode: $('cfgDebugMode').checked,
     auto_reasoning_content: $('cfgAutoReasoning').checked,
+    analysis_enabled: $('cfgAnalysisEnabled').checked,
+    analysis_persistence: $('cfgAnalysisPersistence').checked,
+    analysis_persist_raw_bodies: $('cfgAnalysisPersistRaw').checked,
+    analysis_retention_days: parseInt($('cfgAnalysisRetentionDays').value) || 7,
+    analysis_session_gap_min: parseInt($('cfgAnalysisSessionGap').value) || 30,
   };
 
   try {
@@ -722,6 +991,25 @@ async function saveSettings() {
     }
   } catch(e) {
     showToast('保存失败', true);
+  }
+}
+
+async function clearAnalysisHistory() {
+  if (!confirm('确定要清空所有分析历史会话和本地日志文件吗？此操作不可恢复。')) {
+    return;
+  }
+  try {
+    const r = await fetch('/api/analysis/sessions', { method: 'DELETE' });
+    const resp = await r.json();
+    if (resp.status === 'cleared') {
+      showToast('分析历史已全部清除');
+      currentSessionId = null;
+      loadAnalysisSessions();
+    } else {
+      showToast('清除失败', true);
+    }
+  } catch(e) {
+    showToast('请求清除失败', true);
   }
 }
 
@@ -752,6 +1040,14 @@ function resetSettings() {
   $('cfgAntiloopCheckTokens').value = 0;
   $('cfgDebugMode').checked = false;
   $('cfgAutoReasoning').checked = true;
+
+  $('cfgAnalysisEnabled').checked = true;
+  $('analysisSubSettings').style.display = 'none';
+  $('cfgAnalysisPersistence').checked = false;
+  $('analysisRawBodiesRow').style.display = 'none';
+  $('cfgAnalysisPersistRaw').checked = false;
+  $('cfgAnalysisRetentionDays').value = 7;
+  $('cfgAnalysisSessionGap').value = 30;
 }
 
 function setRestartBanner(visible, reasons) {
@@ -796,6 +1092,404 @@ function showToast(msg, isError) {
   t.textContent = msg;
   t.className = 'toast ' + (isError ? 'error' : '') + ' show';
   setTimeout(() => t.classList.remove('show'), 2500);
+}
+
+// ── 请求分析相关状态与函数 ──
+let currentSessionId = null;
+let sessionSummaries = [];
+
+async function loadAnalysisSessions() {
+  const container = $('sessionListContainer');
+  container.innerHTML = '<div class="empty-state">读取中...</div>';
+  try {
+    const r = await fetch('/api/analysis/sessions?limit=50&offset=0');
+    sessionSummaries = await r.json();
+    renderSessionList();
+  } catch(e) {
+    container.innerHTML = '<div class="empty-state"><p>加载请求历史失败</p></div>';
+  }
+}
+
+function renderSessionList() {
+  const container = $('sessionListContainer');
+  container.innerHTML = '';
+  if (sessionSummaries.length === 0) {
+    container.innerHTML = '<div class="empty-state"><p>暂无请求分析记录</p><p style="font-size:11px;margin-top:4px">发送API请求即可在此生成诊断分析</p></div>';
+    $('analysisMainPanel').style.display = 'none';
+    $('analysisMainEmpty').style.display = '';
+    return;
+  }
+
+  sessionSummaries.forEach(s => {
+    const time = new Date(s.start_time).toLocaleTimeString('zh-CN', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    const fmtType = (s.format || 'openai').toUpperCase();
+    const model = s.models || '--';
+    const status = s.status || 200;
+    const statusClass = status >= 400 ? 'status-400' : 'status-200';
+    const badgeClass = s.format === 'anthropic' ? 'badge-anthropic' : 'badge-openai';
+
+    const item = document.createElement('div');
+    item.className = 'session-item' + (s.id === currentSessionId ? ' active' : '');
+    
+    item.innerHTML = `
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+        <span style="font-size: 11px; color: var(--text2); font-family: monospace;">${time}</span>
+        <span class="badge ${badgeClass}" style="padding: 1px 6px; font-size: 10px;">${fmtType}</span>
+      </div>
+      <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px;">
+        <span style="font-size: 12px; font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;" title="${model}">${model}</span>
+        <span class="${statusClass}" style="font-size: 11px; font-weight: 600; font-family: monospace;">${status}</span>
+      </div>
+    `;
+    item.addEventListener('click', () => selectSession(s.id));
+    container.appendChild(item);
+  });
+}
+
+function selectSession(id) {
+  currentSessionId = id;
+  renderSessionList();
+  showSessionDetail(id);
+}
+
+async function showSessionDetail(id) {
+  $('analysisMainPanel').style.display = '';
+  $('analysisMainEmpty').style.display = 'none';
+
+  try {
+    const r = await fetch('/api/analysis/sessions/' + id);
+    const s = await r.json();
+
+    $('ansSessionId').textContent = '请求详情 #' + id.substring(5, 11);
+    $('ansRequestCount').textContent = s.request_count;
+    $('ansTokens').textContent = `${s.total_tokens} (入: ${s.prompt_tokens} / 出: ${s.completion_tokens})`;
+    
+    const hitTotal = s.cache_hit_tokens + s.cache_miss_tokens;
+    const ratio = hitTotal > 0 ? (s.cache_hit_tokens / hitTotal * 100).toFixed(0) + '%' : '0%';
+    $('ansCacheRatio').textContent = `${ratio} (命中: ${s.cache_hit_tokens})`;
+    
+    $('ansRetries').textContent = s.retries;
+    $('ansRetries').style.display = s.retries > 0 ? '' : 'none';
+    $('ansErrors').textContent = s.errors;
+    $('ansErrors').style.display = s.errors > 0 ? '' : 'none';
+
+    // 提取 tools
+    let tools = [];
+    for (let tid in s.turns) {
+      const turn = s.turns[tid];
+      const primaryEvent = turn.events.find(e => e.phase === 'primary');
+      if (primaryEvent && primaryEvent.request && primaryEvent.request.tools && primaryEvent.request.tools.length > 0) {
+        tools = primaryEvent.request.tools;
+        break;
+      }
+    }
+    
+    const toolsWrapper = $('ansToolsWrapper');
+    const toolsContent = $('ansToolsContent');
+    const toolsArrow = $('toolsArrow');
+    if (tools && tools.length > 0) {
+      toolsWrapper.style.display = '';
+      toolsContent.innerHTML = tools.map(t => `<div style="padding: 2px 0;">• ${escapeHtml(t)}</div>`).join('');
+      toolsContent.style.display = 'none';
+      toolsArrow.className = 'arrow collapsed';
+      toolsArrow.textContent = '▼';
+    } else {
+      toolsWrapper.style.display = 'none';
+    }
+
+    // 渲染聊天时间线
+    renderChatTimeline(s.turns);
+  } catch(e) {
+    showToast('加载详情失败', true);
+  }
+}
+
+function toggleToolsFold() {
+  const el = $('ansToolsContent');
+  const arrow = $('toolsArrow');
+  if (el.style.display === 'none') {
+    el.style.display = 'block';
+    arrow.className = 'arrow';
+  } else {
+    el.style.display = 'none';
+    arrow.className = 'arrow collapsed';
+  }
+}
+
+function renderChatTimeline(turns) {
+  const timeline = $('chatTimeline');
+  timeline.innerHTML = '';
+
+  const tids = Object.keys(turns).map(Number).sort((a,b) => a - b);
+  tids.forEach(tid => {
+    const turn = turns[tid];
+
+    if (turn.chat_history && turn.chat_history.length > 0) {
+      turn.chat_history.forEach((msg, mIdx) => {
+        if (msg.role === 'user' || msg.role === 'system') {
+          const uBubble = document.createElement('div');
+          uBubble.className = 'chat-bubble user';
+          let roleName = msg.role === 'system' ? '系统 (System)' : '用户';
+          
+          let contentHtml = `
+            <div class="bubble-meta">
+              <span>${roleName}</span>
+            </div>
+            <div>${escapeHtml(msg.content || '(空内容)')}</div>
+          `;
+
+          const isLastUser = (msg.role === 'user' && !turn.chat_history.slice(mIdx + 1).some(m => m.role === 'user'));
+          if (isLastUser && (turn.system_modified || turn.extra_injected)) {
+            const primaryEvent = turn.events.find(e => e.phase === 'primary');
+            const logId = primaryEvent ? primaryEvent.log_id : 0;
+            
+            let detailsHtml = "";
+            if (turn.system_modified) detailsHtml += "• System Prompt 拼接位置已重组优化\n";
+            if (turn.extra_injected) detailsHtml += "• 注入了额外定义的最高优先级指令\n";
+            if (primaryEvent && primaryEvent.request) {
+              detailsHtml += `\n[配置快照]:\n- 思考模式: ${primaryEvent.request.thinking_mode || '默认'}\n- 推理强度: ${primaryEvent.request.reasoning_effort || '默认'}\n- MaxTokens: ${primaryEvent.request.max_tokens || '不限制'}`;
+            }
+
+            contentHtml += `
+              <div class="minor-details">
+                <div class="minor-toggle" onclick="toggleMinorDetails(this)">
+                  <span>系统优化处理项 (展开详情) v</span>
+                  ${logId ? `<span class="jump-raw-btn" onclick="event.stopPropagation();jumpToRawLog(${logId})">[原始数据]</span>` : ''}
+                </div>
+                <div class="minor-content">${escapeHtml(detailsHtml)}</div>
+              </div>
+            `;
+          }
+
+          uBubble.innerHTML = contentHtml;
+          timeline.appendChild(uBubble);
+
+        } else if (msg.role === 'tool') {
+          const notice = document.createElement('div');
+          notice.className = 'system-notice success';
+          notice.style.borderColor = 'var(--purple)';
+          notice.style.background = 'rgba(163,113,247,0.04)';
+          notice.innerHTML = `
+            <div class="system-notice-title" style="color:var(--purple)">
+              <span>工具返回内容 (Tool Result)</span>
+            </div>
+            <div style="font-family:'Cascadia Code','Fira Code',monospace; font-size:11px; white-space:pre-wrap; word-break:break-all;">${escapeHtml(msg.content)}</div>
+          `;
+          timeline.appendChild(notice);
+
+        } else if (msg.role === 'assistant') {
+          const aBubble = document.createElement('div');
+          aBubble.className = 'chat-bubble assistant';
+          
+          const primaryEvent = turn.events.find(e => e.phase === 'primary');
+          const logId = primaryEvent ? primaryEvent.log_id : 0;
+
+          let contentHtml = `
+            <div class="bubble-meta">
+              <span>AI 响应</span>
+              ${logId ? `<span class="jump-raw-btn" onclick="jumpToRawLog(${logId})">[原始数据]</span>` : ''}
+            </div>
+          `;
+
+          if (msg.reasoning_content) {
+            const rLen = msg.reasoning_content.length;
+            const rId = 'reasoning-' + turn.turn_id + '-' + mIdx;
+            contentHtml += `
+              <div class="reasoning-toggle" onclick="toggleReasoning('${rId}')">
+                <span>深度思考过程 (展开 ${rLen} 字) v</span>
+              </div>
+              <div class="reasoning-content" id="${rId}">${escapeHtml(msg.reasoning_content)}</div>
+            `;
+          }
+
+          if (msg.tool_calls && msg.tool_calls.length > 0) {
+            contentHtml += `
+              <div style="margin-bottom:10px; padding: 10px; border-left: 3px solid var(--purple); background: var(--bg3); border-radius: 4px;">
+                <div style="font-weight:600; font-size:11px; color: var(--purple); margin-bottom: 4px;">工具调用 (Tool Call)</div>
+                ${msg.tool_calls.map(tc => `<div style="font-family:monospace; font-size:11px;">${escapeHtml(tc)}</div>`).join('')}
+              </div>
+            `;
+          }
+
+          if (msg.content) {
+            contentHtml += `<div>${escapeHtml(msg.content)}</div>`;
+          } else {
+            contentHtml += `<div style="color:var(--text2); font-style:italic;">仅包含思考或工具调用，无文本输出</div>`;
+          }
+
+          aBubble.innerHTML = contentHtml;
+          timeline.appendChild(aBubble);
+        }
+      });
+
+      turn.events.forEach(ev => {
+        if (ev.phase === 'analyzer') {
+          const notice = document.createElement('div');
+          notice.className = 'system-notice danger';
+          notice.innerHTML = `
+            <div class="system-notice-title">
+              <span>系统：并行防循环分析已触发</span>
+              <span class="jump-raw-btn" onclick="jumpToRawLog(${ev.log_id})">[原始数据]</span>
+            </div>
+            <div>检测到模型可能陷入思维循环（完成状态: <b>${ev.response.finish_reason}</b>）。<br>分析器判定：<b>${ev.response.analyzer_judgment}</b></div>
+          `;
+          timeline.appendChild(notice);
+        } else if (ev.phase === 'retry') {
+          const notice = document.createElement('div');
+          notice.className = 'system-notice success';
+          notice.innerHTML = `
+            <div class="system-notice-title">
+              <span>系统：反循环重试已执行</span>
+              <span class="jump-raw-btn" onclick="jumpToRawLog(${ev.log_id})">[原始数据]</span>
+            </div>
+            <div>代理已强制重新整理思路并进行二次重试。使用模型：<b>${ev.response.retry_model}</b>，耗时: <b>${ev.latency_ms}ms</b>，重试状态：<b>${ev.response.finish_reason}</b></div>
+          `;
+          timeline.appendChild(notice);
+        }
+      });
+
+    } else {
+      if (turn.user_message) {
+        const uBubble = document.createElement('div');
+        uBubble.className = 'chat-bubble user';
+        
+        let contentHtml = `
+          <div class="bubble-meta">
+            <span>用户 (轮次 #${turn.turn_id})</span>
+          </div>
+          <div>${escapeHtml(turn.user_message)}</div>
+        `;
+
+        if (turn.system_modified || turn.extra_injected) {
+          const primaryEvent = turn.events.find(e => e.phase === 'primary');
+          const logId = primaryEvent ? primaryEvent.log_id : 0;
+          
+          let detailsHtml = "";
+          if (turn.system_modified) detailsHtml += "• System Prompt 拼接位置已重组优化\n";
+          if (turn.extra_injected) detailsHtml += "• 注入了额外定义的最高优先级指令\n";
+          if (primaryEvent && primaryEvent.request) {
+            detailsHtml += `\n[配置快照]:\n- 思考模式: ${primaryEvent.request.thinking_mode || '默认'}\n- 推理强度: ${primaryEvent.request.reasoning_effort || '默认'}\n- MaxTokens: ${primaryEvent.request.max_tokens || '不限制'}`;
+          }
+
+          contentHtml += `
+            <div class="minor-details">
+              <div class="minor-toggle" onclick="toggleMinorDetails(this)">
+                <span>系统优化处理项 (展开详情) v</span>
+                ${logId ? `<span class="jump-raw-btn" onclick="event.stopPropagation();jumpToRawLog(${logId})">[原始数据]</span>` : ''}
+              </div>
+              <div class="minor-content">${escapeHtml(detailsHtml)}</div>
+            </div>
+          `;
+        }
+
+        uBubble.innerHTML = contentHtml;
+        timeline.appendChild(uBubble);
+      }
+
+      turn.events.forEach(ev => {
+        if (ev.phase === 'analyzer') {
+          const notice = document.createElement('div');
+          notice.className = 'system-notice danger';
+          notice.innerHTML = `
+            <div class="system-notice-title">
+              <span>系统：并行防循环分析已触发</span>
+              <span class="jump-raw-btn" onclick="jumpToRawLog(${ev.log_id})">[原始数据]</span>
+            </div>
+            <div>检测到模型可能陷入思维循环（完成状态: <b>${ev.response.finish_reason}</b>）。<br>分析器判定：<b>${ev.response.analyzer_judgment}</b></div>
+          `;
+          timeline.appendChild(notice);
+        } else if (ev.phase === 'retry') {
+          const notice = document.createElement('div');
+          notice.className = 'system-notice success';
+          notice.innerHTML = `
+            <div class="system-notice-title">
+              <span>系统：反循环重试已执行</span>
+              <span class="jump-raw-btn" onclick="jumpToRawLog(${ev.log_id})">[原始数据]</span>
+            </div>
+            <div>代理已强制重新整理思路并进行二次重试。使用模型：<b>${ev.response.retry_model}</b>，耗时: <b>${ev.latency_ms}ms</b>，重试状态：<b>${ev.response.finish_reason}</b></div>
+          `;
+          timeline.appendChild(notice);
+        }
+      });
+
+      if (turn.assistant_response || turn.reasoning_content || (turn.tool_calls && turn.tool_calls.length > 0)) {
+        const aBubble = document.createElement('div');
+        aBubble.className = 'chat-bubble assistant';
+        
+        const primaryEvent = turn.events.find(e => e.phase === 'primary');
+        const logId = primaryEvent ? primaryEvent.log_id : 0;
+
+        let contentHtml = `
+          <div class="bubble-meta">
+            <span>AI 响应</span>
+            ${logId ? `<span class="jump-raw-btn" onclick="jumpToRawLog(${logId})">[原始数据]</span>` : ''}
+          </div>
+        `;
+
+        if (turn.reasoning_content) {
+          const rLen = turn.reasoning_content.length;
+          const rId = 'reasoning-' + turn.turn_id;
+          contentHtml += `
+            <div class="reasoning-toggle" onclick="toggleReasoning('${rId}')">
+              <span>深度思考过程 (展开 ${rLen} 字) v</span>
+            </div>
+            <div class="reasoning-content" id="${rId}">${escapeHtml(turn.reasoning_content)}</div>
+          `;
+        }
+
+        if (turn.tool_calls && turn.tool_calls.length > 0) {
+          contentHtml += `
+            <div style="margin-bottom:10px; padding: 10px; border-left: 3px solid var(--purple); background: var(--bg3); border-radius: 4px;">
+              <div style="font-weight:600; font-size:11px; color: var(--purple); margin-bottom: 4px;">工具调用 (Tool Call)</div>
+              ${turn.tool_calls.map(tc => `<div style="font-family:monospace; font-size:11px;">${escapeHtml(tc)}</div>`).join('')}
+            </div>
+          `;
+        }
+
+        if (turn.assistant_response) {
+          contentHtml += `<div>${escapeHtml(turn.assistant_response)}</div>`;
+        } else {
+          contentHtml += `<div style="color:var(--text2); font-style:italic;">仅包含思考或工具调用，无文本输出</div>`;
+        }
+
+        aBubble.innerHTML = contentHtml;
+        timeline.appendChild(aBubble);
+      }
+    }
+  });
+}
+
+function toggleReasoning(id) {
+  const el = document.getElementById(id);
+  if (el) {
+    el.classList.toggle('show');
+  }
+}
+
+function toggleMinorDetails(btn) {
+  const content = btn.parentElement.querySelector('.minor-content');
+  if (content) {
+    content.classList.toggle('show');
+    btn.querySelector('span').textContent = content.classList.contains('show') ? '✨ 系统优化处理项 (收起详情) ^' : '✨ 系统优化处理项 (展开详情) v';
+  }
+}
+
+function exportSessionMarkdown() {
+  if (!currentSessionId) return;
+  window.open(`/api/analysis/sessions/${currentSessionId}/export.md`);
+}
+
+async function jumpToRawLog(logId) {
+  if (!logId) return;
+  const dashboardTab = document.querySelector('nav button[data-page="dashboard"]');
+  if (dashboardTab) {
+    dashboardTab.click();
+  }
+  let exists = logs.some(l => l.id === logId);
+  if (!exists) {
+    await loadLogs();
+  }
+  showDetail(logId);
 }
 
 loadLogs();

@@ -3,6 +3,7 @@ package main
 import (
 	_ "embed"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -24,6 +25,8 @@ func handleGUI(w http.ResponseWriter, r *http.Request, l *Logger, cfg *Config) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
 
 	if r.Method == "OPTIONS" {
 		w.WriteHeader(http.StatusOK)
@@ -35,6 +38,16 @@ func handleGUI(w http.ResponseWriter, r *http.Request, l *Logger, cfg *Config) {
 	switch {
 	case path == "/status":
 		handleAPIStatus(w, r, l, cfg)
+	case path == "/analysis/status":
+		handleAPIAnalysisStatus(w, r, cfg)
+	case path == "/analysis/sessions" && r.Method == "GET":
+		handleAPIAnalysisSessions(w, r)
+	case path == "/analysis/sessions" && r.Method == "DELETE":
+		handleAPIClearAnalysisHistory(w, r)
+	case strings.HasPrefix(path, "/analysis/sessions/") && strings.HasSuffix(path, "/export.md"):
+		handleAPIAnalysisExport(w, r, path)
+	case strings.HasPrefix(path, "/analysis/sessions/"):
+		handleAPIAnalysisSessionDetail(w, r, path)
 	case path == "/logs" && r.Method == "DELETE":
 		l.Clear()
 		json.NewEncoder(w).Encode(map[string]string{"status": "cleared"})
@@ -265,4 +278,92 @@ func maskAPIKey(key string) string {
 		return key
 	}
 	return key[:5] + strings.Repeat("*", len(key)-8) + key[len(key)-3:]
+}
+
+func handleAPIAnalysisStatus(w http.ResponseWriter, r *http.Request, cfg *Config) {
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"analysis_enabled":        cfg.AnalysisEnabled,
+		"analysis_persistence":    cfg.AnalysisPersistence,
+		"analysis_persist_raw":    cfg.AnalysisPersistRawBodies,
+		"analysis_retention_days": cfg.AnalysisRetentionDays,
+	})
+}
+
+func handleAPIAnalysisSessions(w http.ResponseWriter, r *http.Request) {
+	limitStr := r.URL.Query().Get("limit")
+	offsetStr := r.URL.Query().Get("offset")
+
+	limit := 50
+	offset := 0
+	if v, err := strconv.Atoi(limitStr); err == nil && v > 0 {
+		limit = v
+	}
+	if v, err := strconv.Atoi(offsetStr); err == nil && v >= 0 {
+		offset = v
+	}
+
+	svc := GetAnalysisService()
+	if svc == nil {
+		json.NewEncoder(w).Encode([]SessionSummary{})
+		return
+	}
+
+	summaries := svc.GetSessionSummaries(limit, offset)
+	if summaries == nil {
+		summaries = []SessionSummary{}
+	}
+	json.NewEncoder(w).Encode(summaries)
+}
+
+func handleAPIAnalysisSessionDetail(w http.ResponseWriter, r *http.Request, path string) {
+	id := strings.TrimPrefix(path, "/analysis/sessions/")
+	svc := GetAnalysisService()
+	if svc == nil {
+		http.Error(w, `{"error":"analysis service not initialized"}`, http.StatusInternalServerError)
+		return
+	}
+
+	sess := svc.GetSessionDetails(id)
+	if sess == nil {
+		http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
+		return
+	}
+
+	json.NewEncoder(w).Encode(sess)
+}
+
+func handleAPIAnalysisExport(w http.ResponseWriter, r *http.Request, path string) {
+	id := strings.TrimPrefix(path, "/analysis/sessions/")
+	id = strings.TrimSuffix(id, "/export.md")
+
+	svc := GetAnalysisService()
+	if svc == nil {
+		http.Error(w, "analysis service not initialized", http.StatusInternalServerError)
+		return
+	}
+
+	md, err := svc.ExportMarkdown(id)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="dsplus_session_%s.md"`, id))
+	w.Write([]byte(md))
+}
+
+func handleAPIClearAnalysisHistory(w http.ResponseWriter, r *http.Request) {
+	svc := GetAnalysisService()
+	if svc == nil {
+		http.Error(w, `{"error":"analysis service not initialized"}`, http.StatusInternalServerError)
+		return
+	}
+
+	if err := svc.ClearHistory(); err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(map[string]string{"status": "cleared"})
 }

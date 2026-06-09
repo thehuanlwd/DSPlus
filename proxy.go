@@ -9,6 +9,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -61,6 +63,19 @@ func NewProxyServer(cfg *Config, l *Logger) *ProxyServer {
 }
 
 func (s *ProxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path == "/favicon.ico" {
+		exe, err := os.Executable()
+		if err == nil {
+			iconPath := filepath.Join(filepath.Dir(exe), "favicon.ico")
+			if _, err := os.Stat(iconPath); err == nil {
+				http.ServeFile(w, r, iconPath)
+				return
+			}
+		}
+		http.NotFound(w, r)
+		return
+	}
+
 	if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/" || r.URL.Path == "/index.html" {
 		handleGUI(w, r, s.logger, s.config)
 		return
@@ -185,6 +200,13 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 	isStream := resp.Header.Get("Content-Type") == "text/event-stream" ||
 		strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
 
+	// ── Assign Session and Turn upfront ──
+	var sessID string
+	var turnID int
+	if s.config.AnalysisEnabled {
+		sessID, turnID = GetAnalysisService().AssignSessionAndTurn(startTime, originalBody, format, r.URL.Path)
+	}
+
 	// ── Anti-Loop detection ──
 	if s.config.AntiLoopEnabled {
 		if isStream {
@@ -205,7 +227,7 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 			})
 			copyHeaders(w.Header(), resp.Header)
 			w.WriteHeader(resp.StatusCode)
-			s.forwardStreamWithAntiLoop(w, resp, logID, transformedBody, format)
+			s.forwardStreamWithAntiLoop(w, resp, logID, transformedBody, format, startTime, r.URL.Path, originalBody, transformed, data, sessID, turnID)
 			return
 		}
 
@@ -239,12 +261,43 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 			TransformedBody:  condStr(s.config.VerboseLogging, truncateBody(string(transformedBody)), ""),
 		})
 
+		var pm TokenUsage
 		if u := extractUsageFromBody(string(bodyBytes)); u != nil {
 			s.logger.UpdateTokenUsage(logID, u)
+			pm = *u
 		}
 		if s.config.VerboseLogging {
 			s.logger.UpdateLastResponse(logID, truncateBody(string(bodyBytes)))
 		}
+
+		// 发射非流式 TraceEvent
+		GetAnalysisService().SubmitEvent(&TraceEvent{
+			ID:        "ev_" + strconv.FormatInt(startTime.UnixNano(), 36),
+			Time:      startTime,
+			LogID:     logID,
+			SessionID: sessID,
+			TurnID:    turnID,
+			Phase:     "primary",
+			Format:    format,
+			Route:     r.URL.Path,
+			Status:    resp.StatusCode,
+			LatencyMs: latency.Milliseconds(),
+			Model:     detectModel(originalBody),
+			Upstream:  upstream,
+			Request:   buildRequestMeta(data, format, transformed, s.config.ExtraPrompt != "" && s.config.ExtraPromptPlacement != "none"),
+			Response: ResponseMeta{
+				FinishReason:     detectBufferFinishReason(bodyBytes),
+				PromptTokens:     int(pm.Prompt),
+				CompletionTokens: int(pm.Completion),
+				TotalTokens:      int(pm.Total),
+				CacheHitTokens:    int(pm.CacheHit),
+				CacheMissTokens:   int(pm.CacheMiss),
+				ReasoningContent:  parseAssistantReasoning(string(bodyBytes), format),
+				Content:           parseAssistantContent(string(bodyBytes), format),
+			},
+			RawRequest:  originalBody,
+			RawResponse: string(bodyBytes),
+		})
 
 		copyHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
@@ -273,9 +326,9 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 
 	if isStream {
-		s.forwardStream(w, resp, logID)
+		s.forwardStream(w, resp, logID, startTime, format, r.URL.Path, originalBody, transformedBody, transformed, data, sessID, turnID)
 	} else {
-		s.forwardBuffered(w, resp, logID)
+		s.forwardBuffered(w, resp, logID, startTime, format, r.URL.Path, originalBody, transformedBody, transformed, data, sessID, turnID)
 	}
 }
 
@@ -349,13 +402,29 @@ func injectReasoningContent(data map[string]interface{}) {
 	}
 }
 
-func (s *ProxyServer) forwardStream(w http.ResponseWriter, resp *http.Response, logID int64) {
+func (s *ProxyServer) forwardStream(
+	w http.ResponseWriter,
+	resp *http.Response,
+	logID int64,
+	startTime time.Time,
+	format string,
+	route string,
+	originalBody string,
+	transformedBody []byte,
+	transformed bool,
+	data map[string]interface{},
+	sessID string,
+	turnID int,
+) {
 	flusher, canFlush := w.(http.Flusher)
 	capture := newCaptureBuffer(captureBufCap)
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, scannerInitialBuf), scannerMaxBuf)
 
 	var lastUsage *TokenUsage
+	var finishReason string
+	var reasoningBuilder strings.Builder
+	var contentBuilder strings.Builder
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -369,13 +438,39 @@ func (s *ProxyServer) forwardStream(w http.ResponseWriter, resp *http.Response, 
 			flusher.Flush()
 		}
 
-		if lastUsage == nil && strings.HasPrefix(line, "data: ") {
-			data := strings.TrimPrefix(line, "data: ")
-			if data != "[DONE]" {
+		if strings.HasPrefix(line, "data: ") {
+			dataStr := strings.TrimPrefix(line, "data: ")
+			if dataStr != "[DONE]" {
 				var chunk map[string]interface{}
-				if err := json.Unmarshal([]byte(data), &chunk); err == nil {
+				if err := json.Unmarshal([]byte(dataStr), &chunk); err == nil {
 					if u := parseUsageFromMap(chunk); u != nil {
 						lastUsage = u
+					}
+					if choices, ok := chunk["choices"].([]interface{}); ok && len(choices) > 0 {
+						if choice, ok := choices[0].(map[string]interface{}); ok {
+							if fr, _ := choice["finish_reason"].(string); fr != "" {
+								finishReason = fr
+							}
+							if delta, ok := choice["delta"].(map[string]interface{}); ok {
+								if rc, _ := delta["reasoning_content"].(string); rc != "" {
+									reasoningBuilder.WriteString(rc)
+								}
+								if ct, _ := delta["content"].(string); ct != "" {
+									contentBuilder.WriteString(ct)
+								}
+							}
+						}
+					}
+					// 兼容 Anthropic chunk 格式
+					if chunk["type"] == "content_block_delta" {
+						if delta, ok := chunk["delta"].(map[string]interface{}); ok {
+							if rc, _ := delta["thinking"].(string); rc != "" {
+								reasoningBuilder.WriteString(rc)
+							}
+							if ct, _ := delta["text"].(string); ct != "" {
+								contentBuilder.WriteString(ct)
+							}
+						}
 					}
 				}
 			}
@@ -392,9 +487,55 @@ func (s *ProxyServer) forwardStream(w http.ResponseWriter, resp *http.Response, 
 	if s.config.VerboseLogging {
 		s.logger.UpdateLastResponse(logID, capture.String())
 	}
+
+	// 发射 TraceEvent
+	var pm TokenUsage
+	if lastUsage != nil {
+		pm = *lastUsage
+	}
+	GetAnalysisService().SubmitEvent(&TraceEvent{
+		ID:        "ev_" + strconv.FormatInt(startTime.UnixNano(), 36),
+		Time:      startTime,
+		LogID:     logID,
+		SessionID: sessID,
+		TurnID:    turnID,
+		Phase:     "primary",
+		Format:    format,
+		Route:     route,
+		Status:    resp.StatusCode,
+		LatencyMs: time.Since(startTime).Milliseconds(),
+		Model:     detectModel(originalBody),
+		Upstream:  s.selectUpstream(format),
+		Request:   buildRequestMeta(data, format, transformed, s.config.ExtraPrompt != "" && s.config.ExtraPromptPlacement != "none"),
+		Response: ResponseMeta{
+			FinishReason:     finishReason,
+			PromptTokens:     int(pm.Prompt),
+			CompletionTokens: int(pm.Completion),
+			TotalTokens:      int(pm.Total),
+			CacheHitTokens:    int(pm.CacheHit),
+			CacheMissTokens:   int(pm.CacheMiss),
+			ReasoningContent:  reasoningBuilder.String(),
+			Content:           contentBuilder.String(),
+		},
+		RawRequest:  originalBody,
+		RawResponse: capture.String(),
+	})
 }
 
-func (s *ProxyServer) forwardBuffered(w http.ResponseWriter, resp *http.Response, logID int64) {
+func (s *ProxyServer) forwardBuffered(
+	w http.ResponseWriter,
+	resp *http.Response,
+	logID int64,
+	startTime time.Time,
+	format string,
+	route string,
+	originalBody string,
+	transformedBody []byte,
+	transformed bool,
+	data map[string]interface{},
+	sessID string,
+	turnID int,
+) {
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		log.Printf("[proxy] forwardBuffered read error: %v", err)
@@ -403,23 +544,64 @@ func (s *ProxyServer) forwardBuffered(w http.ResponseWriter, resp *http.Response
 	bodyBytes = replaceDSMLMarkersBytes(bodyBytes)
 	w.Write(bodyBytes)
 
+	var lastUsage *TokenUsage
 	if u := extractUsageFromBody(string(bodyBytes)); u != nil {
 		s.logger.UpdateTokenUsage(logID, u)
+		lastUsage = u
 	}
 	if s.config.VerboseLogging {
 		s.logger.UpdateLastResponse(logID, truncateBody(string(bodyBytes)))
 	}
+
+	fr := detectBufferFinishReason(bodyBytes)
+
+	// 发射 TraceEvent
+	var pm TokenUsage
+	if lastUsage != nil {
+		pm = *lastUsage
+	}
+	GetAnalysisService().SubmitEvent(&TraceEvent{
+		ID:        "ev_" + strconv.FormatInt(startTime.UnixNano(), 36),
+		Time:      startTime,
+		LogID:     logID,
+		SessionID: sessID,
+		TurnID:    turnID,
+		Phase:     "primary",
+		Format:    format,
+		Route:     route,
+		Status:    resp.StatusCode,
+		LatencyMs: time.Since(startTime).Milliseconds(),
+		Model:     detectModel(originalBody),
+		Upstream:  s.selectUpstream(format),
+		Request:   buildRequestMeta(data, format, transformed, s.config.ExtraPrompt != "" && s.config.ExtraPromptPlacement != "none"),
+		Response: ResponseMeta{
+			FinishReason:     fr,
+			PromptTokens:     int(pm.Prompt),
+			CompletionTokens: int(pm.Completion),
+			TotalTokens:      int(pm.Total),
+			CacheHitTokens:    int(pm.CacheHit),
+			CacheMissTokens:   int(pm.CacheMiss),
+			ReasoningContent:  parseAssistantReasoning(string(bodyBytes), format),
+			Content:           parseAssistantContent(string(bodyBytes), format),
+		},
+		RawRequest:  originalBody,
+		RawResponse: string(bodyBytes),
+	})
 }
 
-// forwardStreamWithAntiLoop streams the first response in real-time to the client.
-// If finish_reason=length is detected, it pauses the stream completion (no [DONE]),
-// runs the anti-loop analyzer, then streams the retry response seamlessly.
 func (s *ProxyServer) forwardStreamWithAntiLoop(
 	w http.ResponseWriter,
 	resp *http.Response,
 	logID int64,
 	transformedBody []byte,
 	format string,
+	startTime time.Time,
+	route string,
+	originalBody string,
+	transformed bool,
+	data map[string]interface{},
+	sessID string,
+	turnID int,
 ) {
 	flusher, canFlush := w.(http.Flusher)
 	scanner := bufio.NewScanner(resp.Body)
@@ -434,6 +616,7 @@ func (s *ProxyServer) forwardStreamWithAntiLoop(
 	capture := newCaptureBuffer(captureBufCap)
 
 	reqID := nextTraceReqID()
+	parentEventID := "ev_" + strconv.FormatInt(startTime.UnixNano(), 36)
 	traceKeyvals("event", "phase1_start", "req_id", reqID, "threshold", s.config.AntiLoopCheckTokens,
 		"retry_model", s.config.AntiLoopRetryModel, "format", format)
 
@@ -484,13 +667,13 @@ func (s *ProxyServer) forwardStreamWithAntiLoop(
 			continue
 		}
 
-		data := strings.TrimPrefix(line, "data: ")
-		if data == "[DONE]" {
+		dataChunk := strings.TrimPrefix(line, "data: ")
+		if dataChunk == "[DONE]" {
 			continue
 		}
 
 		var chunk map[string]interface{}
-		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+		if err := json.Unmarshal([]byte(dataChunk), &chunk); err != nil {
 			if _, werr := w.Write([]byte(line + "\n")); werr != nil {
 				log.Printf("[antiloop] reqID=%d write error (unmarshal fallback): %v", reqID, werr)
 				traceKeyvals("event", "write_error", "req_id", reqID, "context", "unmarshal_fallback", "error", werr.Error())
@@ -573,8 +756,7 @@ func (s *ProxyServer) forwardStreamWithAntiLoop(
 				reasoningBuilder.String(),
 				contentBuilder.String(),
 			)
-			log.Printf("[antiloop] parallel analysis triggered at %d tokens (usage=%d estimated=%d)",
-				effectiveTokens, completionTokens, estimatedTokens)
+			log.Printf("[antiloop] parallel analysis triggered at %d tokens", effectiveTokens)
 			traceKeyvals("event", "analyzer_launch", "eff", effectiveTokens, "usage", completionTokens, "est", estimatedTokens)
 		}
 
@@ -600,6 +782,30 @@ func (s *ProxyServer) forwardStreamWithAntiLoop(
 						"tokens", effectiveTokens)
 					earlyStop = true
 					earlyStopAnalysis = result.analysis
+					
+					// 提交分析器事件 (并行的 TraceEvent)
+					analyzerEventID := "ana_" + strconv.FormatInt(time.Now().UnixNano(), 36)
+					GetAnalysisService().SubmitEvent(&TraceEvent{
+						ID:        analyzerEventID,
+						ParentID:  parentEventID,
+						SessionID: sessID,
+						TurnID:    turnID,
+						Time:      time.Now(),
+						Phase:     "analyzer",
+						Format:    "openai",
+						Route:     "/antiloop/analyze (parallel)",
+						Status:    200,
+						Model:     "deepseek-chat",
+						Upstream:  s.config.OpenAIUpstream,
+						Request:   buildRequestMeta(data, format, transformed, s.config.ExtraPrompt != "" && s.config.ExtraPromptPlacement != "none"),
+						Response: ResponseMeta{
+							AnalyzerJudgment: result.analysis.Judgment,
+							FinishReason:     "stop",
+						},
+						RawRequest:  "Parallel Analysis Target: " + reasoningBuilder.String(),
+						RawResponse: fmt.Sprintf("Judgment: %s\nGuidance: %s", result.analysis.Judgment, result.analysis.Guidance),
+					})
+					
 					resp.Body.Close() // stop reading upstream
 					goto PHASE1_DONE
 				} else {
@@ -630,6 +836,17 @@ func (s *ProxyServer) forwardStreamWithAntiLoop(
 							contentBuilder.WriteString(ct)
 						}
 					}
+				}
+			}
+		}
+		// 兼容 Anthropic chunk 格式
+		if chunk["type"] == "content_block_delta" {
+			if delta, ok := chunk["delta"].(map[string]interface{}); ok {
+				if rc, _ := delta["thinking"].(string); rc != "" {
+					reasoningBuilder.WriteString(rc)
+				}
+				if ct, _ := delta["text"].(string); ct != "" {
+					contentBuilder.WriteString(ct)
 				}
 			}
 		}
@@ -673,11 +890,6 @@ PHASE1_DONE:
 		log.Printf("[antiloop] reqID=%d scanner exited abnormally (write error or break)", reqID)
 		traceKeyvals("event", "scanner_abort", "req_id", reqID)
 	}
-	log.Printf("[antiloop] reqID=%d Phase 1 done: finish_reason=%s early_stop=%v tokens=%d",
-		reqID, finishReason, earlyStop, completionTokens)
-	traceKeyvals("event", "phase1_done", "req_id", reqID, "finish_reason", finishReason, "early_stop", earlyStop,
-		"usage_tokens", completionTokens, "est_tokens", (reasoningBuilder.Len()+contentBuilder.Len())/4,
-		"reasoning_chars", reasoningBuilder.Len(), "content_chars", contentBuilder.Len())
 
 	// ── Phase 2: Retry (early-stop or length fallback) ──
 	needsRetry := earlyStop || finishReason == "length"
@@ -739,6 +951,39 @@ PHASE1_DONE:
 			capture.Write([]byte("\n"))
 			s.streamHardLimitSSE(w, flusher, canFlush, format, capture, streamID, streamModel, streamCreated)
 		}
+
+		// 提交重试事件
+		var rpm TokenUsage
+		if retryUsage != nil {
+			rpm = *retryUsage
+		}
+		retryEventID := "ret_" + strconv.FormatInt(time.Now().UnixNano(), 36)
+		GetAnalysisService().SubmitEvent(&TraceEvent{
+			ID:        retryEventID,
+			ParentID:  parentEventID,
+			SessionID: sessID,
+			TurnID:    turnID,
+			Time:      time.Now(),
+			Phase:     "retry",
+			Format:    format,
+			Route:     route + " (retry)",
+			Status:    200,
+			Model:     s.config.AntiLoopRetryModel,
+			Upstream:  s.selectUpstream(format),
+			Request:   buildRequestMeta(data, format, transformed, s.config.ExtraPrompt != "" && s.config.ExtraPromptPlacement != "none"),
+			Response: ResponseMeta{
+				FinishReason:     retryFR,
+				PromptTokens:     int(rpm.Prompt),
+				CompletionTokens: int(rpm.Completion),
+				TotalTokens:      int(rpm.Total),
+				CacheHitTokens:    int(rpm.CacheHit),
+				CacheMissTokens:   int(rpm.CacheMiss),
+				RetryModel:       s.config.AntiLoopRetryModel,
+			},
+			RawRequest:  string(retryBody),
+			RawResponse: capture.String(),
+		})
+
 		if retryUsage != nil { lastUsage = retryUsage }
 	} else {
 		log.Printf("[antiloop] reqID=%d no retry needed (finish_reason=%s)", reqID, finishReason)
@@ -790,6 +1035,40 @@ FINALIZE:
 
 	if lastUsage != nil { s.logger.UpdateTokenUsage(logID, lastUsage) }
 	if s.config.VerboseLogging { s.logger.UpdateLastResponse(logID, capture.String()) }
+
+	// 统一提交 Primary 事件
+	var pm TokenUsage
+	if lastUsage != nil {
+		pm = *lastUsage
+	}
+	GetAnalysisService().SubmitEvent(&TraceEvent{
+		ID:        parentEventID,
+		Time:      startTime,
+		LogID:     logID,
+		SessionID: sessID,
+		TurnID:    turnID,
+		Phase:     "primary",
+		Format:    format,
+		Route:     route,
+		Status:    resp.StatusCode,
+		LatencyMs: time.Since(startTime).Milliseconds(),
+		Model:     detectModel(originalBody),
+		Upstream:  s.selectUpstream(format),
+		Request:   buildRequestMeta(data, format, transformed, s.config.ExtraPrompt != "" && s.config.ExtraPromptPlacement != "none"),
+		Response: ResponseMeta{
+			FinishReason:     finishReason,
+			PromptTokens:     int(pm.Prompt),
+			CompletionTokens: int(pm.Completion),
+			TotalTokens:      int(pm.Total),
+			CacheHitTokens:    int(pm.CacheHit),
+			CacheMissTokens:   int(pm.CacheMiss),
+			ReasoningContent:  reasoningBuilder.String(),
+			Content:           contentBuilder.String(),
+			AntiLoopTriggered: needsRetry,
+		},
+		RawRequest:  originalBody,
+		RawResponse: capture.String(),
+	})
 }
 
 func (s *ProxyServer) selectUpstream(format string) string {
