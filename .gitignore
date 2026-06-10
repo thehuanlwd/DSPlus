@@ -24,3 +24,8 @@ Desktop.ini
 *~
 .tmp_repos/
 .gocache/
+yorha_ui/
+web/
+analysis_logs/
+yorha_ui/
+.ps_history/

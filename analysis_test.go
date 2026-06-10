@@ -80,3 +80,27 @@ func TestSessionInference(t *testing.T) {
 		t.Errorf("expected TurnID 1, got %d", ev2.TurnID)
 	}
 }
+
+func TestFormatCacheRatio(t *testing.T) {
+	tests := []struct {
+		hit  int
+		miss int
+		want string
+	}{
+		{100, 0, "100%"},
+		{0, 100, "0%"},
+		{0, 0, "0%"},
+		{9999, 1, "99.9%"}, // 接近但不等于100%
+		{1, 9999, "0.1%"}, // 接近但不等于0%
+		{50, 50, "50.0%"},
+		{75, 25, "75.0%"},
+	}
+
+	for _, tc := range tests {
+		got := formatCacheRatio(tc.hit, tc.miss)
+		if got != tc.want {
+			t.Errorf("formatCacheRatio(%d, %d) = %q, want %q", tc.hit, tc.miss, got, tc.want)
+		}
+	}
+}
+

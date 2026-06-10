@@ -20,7 +20,7 @@ func TestDetectFormat_OpenAI(t *testing.T) {
 		`{"messages": [{"role": "system", "content": "be nice"}, {"role": "user", "content": "hello"}]}`,
 	}
 	for _, body := range tests {
-		if got := detectFormat(body); got != "openai" {
+		if got := detectFormat("/v1/chat/completions", body); got != "openai" {
 			t.Errorf("detectFormat(%q) = %q, want openai", body, got)
 		}
 	}
@@ -33,7 +33,7 @@ func TestDetectFormat_Anthropic(t *testing.T) {
 		`{"system":[{"type":"text","text":"be nice"}],"messages":[{"role":"user","content":"hi"}],"max_tokens":100}`,
 	}
 	for _, body := range tests {
-		if got := detectFormat(body); got != "anthropic" {
+		if got := detectFormat("/v1/messages", body); got != "anthropic" {
 			t.Errorf("detectFormat(%q) = %q, want anthropic", body, got)
 		}
 	}
@@ -47,7 +47,7 @@ func TestDetectFormat_Unknown(t *testing.T) {
 		`{"messages":"not an array"}`,
 	}
 	for _, body := range tests {
-		if got := detectFormat(body); got != "unknown" {
+		if got := detectFormat("/v1/chat/completions", body); got != "unknown" {
 			t.Errorf("detectFormat(%q) = %q, want unknown", body, got)
 		}
 	}
@@ -57,13 +57,13 @@ func TestDetectFormat_UserContentDoesNotConfuse(t *testing.T) {
 	// "max_tokens" and "role":"system" in user content must not affect detection.
 	// This body has a real system role → it's OpenAI regardless of user content.
 	body := `{"messages":[{"role":"system","content":"be helpful"},{"role":"user","content":"please use max_tokens and role system"}],"max_tokens":50}`
-	if got := detectFormat(body); got != "openai" {
+	if got := detectFormat("/v1/chat/completions", body); got != "openai" {
 		t.Errorf("detectFormat with keywords in user content = %q, want openai", got)
 	}
 
 	// No system role + has max_tokens → Anthropic (by design).
 	body2 := `{"messages":[{"role":"user","content":"hello"}],"max_tokens":100}`
-	if got := detectFormat(body2); got != "anthropic" {
+	if got := detectFormat("/v1/messages", body2); got != "anthropic" {
 		t.Errorf("detectFormat(no system + max_tokens) = %q, want anthropic", got)
 	}
 }
@@ -562,5 +562,29 @@ func TestHandleAPISaveConfig_LANAccessRequiresRestart(t *testing.T) {
 		t.Fatalf("restart_reasons = %#v", resp["restart_reasons"])
 	}
 }
+
+func TestDetectFormat_PathBased(t *testing.T) {
+	tests := []struct {
+		path string
+		body string
+		want string
+	}{
+		{"/v1/models", "", "openai"},
+		{"/models", "", "openai"},
+		{"/version", "", "version"},
+		{"/v1/version", "", "version"},
+		{"/props", "", "props"},
+		{"/v1/props", "", "props"},
+		{"/v1/chat/completions", `{"messages":[{"role":"user","content":"hi"}]}`, "openai"},
+	}
+
+	for _, tc := range tests {
+		if got := detectFormat(tc.path, tc.body); got != tc.want {
+			t.Errorf("detectFormat(%q, %q) = %q, want %q", tc.path, tc.body, got, tc.want)
+		}
+	}
+}
+
+
 
 

@@ -1029,6 +1029,28 @@ func parseAssistantToolCalls(rawText string, format string) []string {
 	return toolCalls
 }
 
+func formatCacheRatio(hit, miss int) string {
+	total := hit + miss
+	if total <= 0 {
+		return "0%"
+	}
+	if miss == 0 {
+		return "100%"
+	}
+	if hit == 0 {
+		return "0%"
+	}
+	pct := float64(hit) / float64(total) * 100
+	if pct > 99.9 {
+		return "99.9%"
+	}
+	if pct < 0.1 {
+		return "0.1%"
+	}
+	return fmt.Sprintf("%.1f%%", pct)
+}
+
+
 // GetSessionSummaries 获取会话列表摘要，以 StartTime 倒序排序
 func (s *AnalysisService) GetSessionSummaries(limit, offset int) []SessionSummary {
 	s.lock.RLock()
@@ -1147,12 +1169,8 @@ func (s *AnalysisService) ExportMarkdown(id string) (string, error) {
 	sb.WriteString(fmt.Sprintf("- **关联模型**: %s\n", strings.Join(sess.Models, ", ")))
 	sb.WriteString(fmt.Sprintf("- **总 Token 消耗**: %d (输入: %d, 输出: %d)\n", sess.TotalTokens, sess.PromptTokens, sess.CompletionTokens))
 
-	hitTotal := sess.CacheHitTokens + sess.CacheMissTokens
-	ratio := 0.0
-	if hitTotal > 0 {
-		ratio = float64(sess.CacheHitTokens) / float64(hitTotal) * 100
-	}
-	sb.WriteString(fmt.Sprintf("- **缓存命中率**: %.1f%% (命中: %d, 未命中: %d)\n", ratio, sess.CacheHitTokens, sess.CacheMissTokens))
+	ratioStr := formatCacheRatio(sess.CacheHitTokens, sess.CacheMissTokens)
+	sb.WriteString(fmt.Sprintf("- **缓存命中率**: %s (命中: %d, 未命中: %d)\n", ratioStr, sess.CacheHitTokens, sess.CacheMissTokens))
 	sb.WriteString(fmt.Sprintf("- **系统异常数**: %d\n", sess.Errors))
 	sb.WriteString(fmt.Sprintf("- **反循环重试数**: %d\n\n", sess.Retries))
 

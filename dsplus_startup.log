@@ -7,3 +7,8 @@
 2026/06/09 18:27:39 [server] OpenAI upstream: https://api.deepseek.com
 2026/06/09 18:27:39 [server] Anthropic upstream: https://api.deepseek.com/anthropic
 2026/06/09 18:27:43 [server] shutting down via GUI close...
+2026/06/10 19:11:26 === startup ===
+2026/06/10 19:11:26 [server] DSPlus listening on 0.0.0.0:8188
+2026/06/10 19:11:26 [server] OpenAI upstream: https://api.deepseek.com
+2026/06/10 19:11:26 [server] Anthropic upstream: https://api.deepseek.com/anthropic
+2026/06/10 19:11:27 [server] shutting down via signal...

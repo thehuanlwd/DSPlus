@@ -1,7 +1,7 @@
 package main
 
 import (
-	_ "embed"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,15 +9,54 @@ import (
 	"strings"
 )
 
-//go:embed web/index.html
-var indexHTML []byte
+//go:embed web
+var webFS embed.FS
 
 // All state passed via parameters; no package-level globals needed.
-
 func handleGUI(w http.ResponseWriter, r *http.Request, l *Logger, cfg *SafeConfig, svc *AnalysisService) {
-	if r.URL.Path == "/" || r.URL.Path == "/index.html" {
+	if r.URL.Path == "/" || r.URL.Path == "/index_v2.html" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.Write(indexHTML)
+		w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+		w.Header().Set("Pragma", "no-cache")
+		w.Header().Set("Expires", "0")
+		data, err := webFS.ReadFile("web/index_v2.html")
+		if err != nil {
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
+		w.Write(data)
+		return
+	}
+	if r.URL.Path == "/index.html" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		data, err := webFS.ReadFile("web/index.html")
+		if err != nil {
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
+		w.Write(data)
+		return
+	}
+
+	// 静态资源分发
+	if strings.HasSuffix(r.URL.Path, ".css") || strings.HasSuffix(r.URL.Path, ".js") || strings.HasSuffix(r.URL.Path, ".png") || strings.HasSuffix(r.URL.Path, ".svg") {
+		filePath := "web" + r.URL.Path
+		data, err := webFS.ReadFile(filePath)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		switch {
+		case strings.HasSuffix(filePath, ".css"):
+			w.Header().Set("Content-Type", "text/css; charset=utf-8")
+		case strings.HasSuffix(filePath, ".js"):
+			w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+		case strings.HasSuffix(filePath, ".png"):
+			w.Header().Set("Content-Type", "image/png")
+		case strings.HasSuffix(filePath, ".svg"):
+			w.Header().Set("Content-Type", "image/svg+xml")
+		}
+		w.Write(data)
 		return
 	}
 

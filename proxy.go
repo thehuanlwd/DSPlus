@@ -94,7 +94,9 @@ func (s *ProxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/" || r.URL.Path == "/index.html" {
+	if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/" || r.URL.Path == "/index.html" || r.URL.Path == "/index_v2.html" ||
+		strings.HasSuffix(r.URL.Path, ".css") || strings.HasSuffix(r.URL.Path, ".js") ||
+		strings.HasSuffix(r.URL.Path, ".png") || strings.HasSuffix(r.URL.Path, ".svg") {
 		handleGUI(w, r, s.logger, s.config, s.analysisSvc)
 		return
 	}
@@ -120,7 +122,7 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	originalBody := string(body)
 
-	format := detectFormat(originalBody)
+	format := detectFormat(r.URL.Path, originalBody)
 	upstream := s.selectUpstream(format)
 
 	var transformed bool
@@ -1105,7 +1107,18 @@ func (s *ProxyServer) selectUpstream(format string) string {
 	return cfg.OpenAIUpstream
 }
 
-func detectFormat(body string) string {
+func detectFormat(path string, body string) string {
+	path = strings.TrimSuffix(path, "/")
+	if strings.HasSuffix(path, "/v1/models") || strings.HasSuffix(path, "/models") {
+		return "openai"
+	}
+	if strings.HasSuffix(path, "/version") || strings.HasSuffix(path, "/v1/version") {
+		return "version"
+	}
+	if strings.HasSuffix(path, "/props") || strings.HasSuffix(path, "/v1/props") {
+		return "props"
+	}
+
 	if !isJSON(body) {
 		return "unknown"
 	}
