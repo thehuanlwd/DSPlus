@@ -292,21 +292,23 @@ func (s *AnalysisService) processEvent(ev *TraceEvent) {
 	// 如果 primary 包含 response_body 或者是 retry 阶段的 response_body，我们将其作为 assistant 的回复
 	if ev.Phase == "primary" || ev.Phase == "retry" {
 		if ev.Response.ReasoningContent != "" {
-			turn.ReasoningContent = ev.Response.ReasoningContent
+			turn.ReasoningContent = truncateString(ev.Response.ReasoningContent, 2000)
 		} else if ev.RawResponse != "" {
 			if reasoning := parseAssistantReasoning(ev.RawResponse, ev.Format); reasoning != "" {
-				turn.ReasoningContent = reasoning
+				turn.ReasoningContent = truncateString(reasoning, 2000)
 			}
 		}
+		ev.Response.ReasoningContent = turn.ReasoningContent
 
 		// 优先使用 Response.Content，否则从 RawResponse 提取
 		if ev.Response.Content != "" {
-			turn.AssistantResponse = ev.Response.Content
+			turn.AssistantResponse = truncateString(ev.Response.Content, 2000)
 		} else if ev.RawResponse != "" {
 			if content := parseAssistantContent(ev.RawResponse, ev.Format); content != "" {
-				turn.AssistantResponse = content
+				turn.AssistantResponse = truncateString(content, 2000)
 			}
 		}
+		ev.Response.Content = turn.AssistantResponse
 
 		// 收集 ToolCalls
 		if ev.RawResponse != "" {
@@ -318,8 +320,15 @@ func (s *AnalysisService) processEvent(ev *TraceEvent) {
 
 		// 提取清洗后的 ChatHistory 并存入 turn 和 ev
 		if ev.RawRequest != "" {
-			turn.ChatHistory = extractChatHistory(ev.RawRequest, ev.Format, turn.AssistantResponse, turn.ReasoningContent, turn.ToolCalls)
-			ev.ChatHistory = turn.ChatHistory
+			lastHistoryLen := 0
+			var prevHistory []ChatMessage
+			if sess != nil {
+				prevHistory = sess.getFullChatHistory()
+				lastHistoryLen = len(prevHistory)
+			}
+			incremental := extractChatHistory(ev.RawRequest, ev.Format, turn.AssistantResponse, turn.ReasoningContent, turn.ToolCalls, true, lastHistoryLen)
+			turn.ChatHistory = append(prevHistory, incremental...)
+			ev.ChatHistory = incremental
 		}
 	}
 
@@ -331,15 +340,57 @@ func (s *AnalysisService) processEvent(ev *TraceEvent) {
 	// 4. 清空内存中庞大的原始数据以释放内存
 	ev.RawRequest = ""
 	ev.RawResponse = ""
-
-	s.dumpAllSessionsToHTMLDataLocked()
 }
 
 // inferSession 推导和归拢会话 ID 以及轮次（TurnID）
 func (s *AnalysisService) inferSession(ev *TraceEvent) {
-	// 放弃会话合并，每次请求均为全新 SessionID
-	ev.SessionID = "sess_" + strconv.FormatInt(ev.Time.UnixNano(), 36)
-	ev.TurnID = 1
+	if ev.SessionID != "" {
+		return
+	}
+
+	var currentHistory []ChatMessage
+	if ev.RawRequest != "" {
+		currentHistory = extractChatHistory(ev.RawRequest, ev.Format, "", "", nil, false, 0)
+	}
+
+	var matchedSess *ConversationSession
+	cutoff := ev.Time.Add(-30 * time.Minute)
+
+	for _, sess := range s.sessions {
+		if sess.EndTime.Before(cutoff) {
+			continue
+		}
+		sessHistory := sess.getFullChatHistory()
+		n := len(sessHistory)
+		if len(currentHistory) >= n && n > 0 {
+			match := true
+			for i := 0; i < n; i++ {
+				if currentHistory[i].Role != sessHistory[i].Role || 
+				   currentHistory[i].Content != sessHistory[i].Content {
+					match = false
+					break
+				}
+			}
+			if match {
+				matchedSess = sess
+				break
+			}
+		}
+	}
+
+	if matchedSess != nil {
+		ev.SessionID = matchedSess.ID
+		maxTurnID := 0
+		for tid := range matchedSess.Turns {
+			if tid > maxTurnID {
+				maxTurnID = tid
+			}
+		}
+		ev.TurnID = maxTurnID + 1
+	} else {
+		ev.SessionID = "sess_" + strconv.FormatInt(ev.Time.UnixNano(), 36)
+		ev.TurnID = 1
+	}
 }
 
 // NewTraceEvent 是 TraceEvent 的统一构建工厂方法
@@ -554,35 +605,9 @@ func (s *AnalysisService) loadHistoryFromDisk() {
 		}
 	}
 	log.Printf("[analysis] loaded history from disk: %d sessions active", len(s.sessions))
-	s.dumpAllSessionsToHTMLDataLocked()
 }
 
-func (s *AnalysisService) dumpAllSessionsToHTMLDataLocked() {
-	var details []interface{}
-	var keys []string
-	for k := range s.sessions {
-		keys = append(keys, k)
-	}
-	sort.Slice(keys, func(i, j int) bool {
-		return s.sessions[keys[i]].StartTime.After(s.sessions[keys[j]].StartTime)
-	})
 
-	for _, k := range keys {
-		sess := s.sessions[k]
-		details = append(details, sess)
-	}
-
-	data, err := json.MarshalIndent(details, "", "  ")
-	if err != nil {
-		log.Printf("[analysis] failed to marshal html data: %v", err)
-		return
-	}
-
-	filePath := filepath.Join(s.logDir, "html数据")
-	if err := os.WriteFile(filePath, data, 0644); err != nil {
-		log.Printf("[analysis] failed to write html数据 file: %v", err)
-	}
-}
 
 func (s *AnalysisService) reconstructEventInMemory(ev *TraceEvent) {
 	sess, exists := s.sessions[ev.SessionID]
@@ -659,7 +684,13 @@ func (s *AnalysisService) reconstructEventInMemory(ev *TraceEvent) {
 			turn.ToolCalls = ev.Response.ToolCalls
 		}
 		if len(ev.ChatHistory) > 0 {
-			turn.ChatHistory = ev.ChatHistory
+			var prevHistory []ChatMessage
+			if ev.TurnID > 1 {
+				if prevTurn, ok := sess.Turns[ev.TurnID-1]; ok {
+					prevHistory = prevTurn.ChatHistory
+				}
+			}
+			turn.ChatHistory = append(prevHistory, ev.ChatHistory...)
 		}
 	}
 
@@ -755,7 +786,7 @@ func (s *AnalysisService) AssignSessionAndTurn(startTime time.Time, rawRequest s
 	// 提取当前轮次的 UserMessage 写入占位的 Turn 中
 	userMsg := getLastUserMessage(tempEv)
 	if userMsg != "" && turn.UserMessage == "" {
-		turn.UserMessage = userMsg
+		turn.UserMessage = truncateString(userMsg, 1000)
 	}
 
 	return tempEv.SessionID, tempEv.TurnID
@@ -1322,6 +1353,7 @@ func buildRequestMeta(data map[string]interface{}, format string, transformed, e
 			}
 		}
 	}
+	meta.LastUserSummary = truncateString(meta.LastUserSummary, 1000)
 	return meta
 }
 
@@ -1335,7 +1367,7 @@ func detectModel(body string) string {
 	return "deepseek-chat"
 }
 
-func extractChatHistory(rawRequest string, format string, finalReply string, finalReasoning string, finalTools []string) []ChatMessage {
+func extractChatHistory(rawRequest string, format string, finalReply string, finalReasoning string, finalTools []string, incrementalOnly bool, lastHistoryLen int) []ChatMessage {
 	var history []ChatMessage
 	if rawRequest == "" {
 		return history
@@ -1351,7 +1383,13 @@ func extractChatHistory(rawRequest string, format string, finalReply string, fin
 		return history
 	}
 
-	for _, msgVal := range messages {
+	startIndex := 0
+	if incrementalOnly && lastHistoryLen > 0 && lastHistoryLen <= len(messages) {
+		startIndex = lastHistoryLen
+	}
+
+	for idx := startIndex; idx < len(messages); idx++ {
+		msgVal := messages[idx]
 		msg, ok := msgVal.(map[string]interface{})
 		if !ok {
 			continue
@@ -1416,8 +1454,8 @@ func extractChatHistory(rawRequest string, format string, finalReply string, fin
 
 		history = append(history, ChatMessage{
 			Role:             role,
-			Content:          content,
-			ReasoningContent: reasoning,
+			Content:          truncateString(content, 1000),
+			ReasoningContent: truncateString(reasoning, 1000),
 			ToolCalls:        toolCalls,
 		})
 	}
@@ -1425,8 +1463,8 @@ func extractChatHistory(rawRequest string, format string, finalReply string, fin
 	if finalReply != "" || finalReasoning != "" || len(finalTools) > 0 {
 		history = append(history, ChatMessage{
 			Role:             "assistant",
-			Content:          finalReply,
-			ReasoningContent: finalReasoning,
+			Content:          truncateString(finalReply, 1000),
+			ReasoningContent: truncateString(finalReasoning, 1000),
 			ToolCalls:        finalTools,
 		})
 	}
@@ -1508,5 +1546,26 @@ func detectSemanticType(data map[string]interface{}, format string) string {
 		return "tool_call" // assistant 发起了工具调用，等待结果
 	}
 	return "chat"
+}
+
+func truncateString(s string, maxLen int) string {
+	runes := []rune(s)
+	if len(runes) > maxLen {
+		return string(runes[:maxLen]) + "...(truncated)"
+	}
+	return s
+}
+
+func (sess *ConversationSession) getFullChatHistory() []ChatMessage {
+	if len(sess.Turns) == 0 {
+		return nil
+	}
+	maxTurnID := 0
+	for k := range sess.Turns {
+		if k > maxTurnID {
+			maxTurnID = k
+		}
+	}
+	return sess.Turns[maxTurnID].ChatHistory
 }
 

@@ -63,7 +63,7 @@ func TestSessionInference(t *testing.T) {
 		t.Errorf("expected TurnID 1, got %d", ev1.TurnID)
 	}
 
-	// 相同的指纹在短时间内，现在由于放弃了会话合并，也应该产生不同的 SessionID
+	// 相同的指纹在短时间内，现在由于实现了会话合并，应该产生相同的 SessionID，且 TurnID 递增
 	ev2 := &TraceEvent{
 		ID:        "ev2",
 		Time:      now.Add(1 * time.Minute),
@@ -73,11 +73,11 @@ func TestSessionInference(t *testing.T) {
 	}
 	svc.processEvent(ev2)
 
-	if ev2.SessionID == ev1.SessionID {
-		t.Errorf("expected different session ID, got same: %s", ev1.SessionID)
+	if ev2.SessionID != ev1.SessionID {
+		t.Errorf("expected same session ID, got different: %s vs %s", ev1.SessionID, ev2.SessionID)
 	}
-	if ev2.TurnID != 1 {
-		t.Errorf("expected TurnID 1, got %d", ev2.TurnID)
+	if ev2.TurnID != 2 {
+		t.Errorf("expected TurnID 2, got %d", ev2.TurnID)
 	}
 }
 
@@ -101,6 +101,74 @@ func TestFormatCacheRatio(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("formatCacheRatio(%d, %d) = %q, want %q", tc.hit, tc.miss, got, tc.want)
 		}
+	}
+}
+
+func TestTruncateString(t *testing.T) {
+	s1 := "Hello"
+	if got := truncateString(s1, 10); got != s1 {
+		t.Errorf("expected %q, got %q", s1, got)
+	}
+
+	s2 := "这是一个超长的中文字符串测试"
+	got2 := truncateString(s2, 5)
+	want2 := "这是一个超...(truncated)"
+	if got2 != want2 {
+		t.Errorf("expected %q, got %q", want2, got2)
+	}
+}
+
+func TestExtractChatHistoryIncremental(t *testing.T) {
+	rawReq := `{
+		"messages": [
+			{"role": "user", "content": "msg1"},
+			{"role": "assistant", "content": "msg2"},
+			{"role": "user", "content": "msg3"}
+		]
+	}`
+
+	full := extractChatHistory(rawReq, "openai", "finalReply", "", nil, false, 0)
+	if len(full) != 4 {
+		t.Errorf("expected full history size 4, got %d", len(full))
+	}
+	if full[0].Content != "msg1" || full[3].Content != "finalReply" {
+		t.Errorf("incorrect content in full history")
+	}
+
+	inc := extractChatHistory(rawReq, "openai", "finalReply", "", nil, true, 2)
+	if len(inc) != 2 {
+		t.Errorf("expected incremental size 2, got %d", len(inc))
+	}
+	if inc[0].Content != "msg3" || inc[1].Content != "finalReply" {
+		t.Errorf("incorrect content in incremental history: %v", inc)
+	}
+}
+
+func TestGetFullChatHistory(t *testing.T) {
+	sess := &ConversationSession{
+		Turns: make(map[int]*ConversationTurn),
+	}
+	sess.Turns[1] = &ConversationTurn{
+		TurnID: 1,
+		ChatHistory: []ChatMessage{
+			{Role: "user", Content: "hello"},
+		},
+	}
+	sess.Turns[2] = &ConversationTurn{
+		TurnID: 2,
+		ChatHistory: []ChatMessage{
+			{Role: "user", Content: "hello"},
+			{Role: "assistant", Content: "hi"},
+			{Role: "user", Content: "how are you"},
+		},
+	}
+
+	full := sess.getFullChatHistory()
+	if len(full) != 3 {
+		t.Errorf("expected 3 messages, got %d", len(full))
+	}
+	if full[0].Content != "hello" || full[2].Content != "how are you" {
+		t.Errorf("incorrect content order in full history: %v", full)
 	}
 }
 

@@ -779,16 +779,22 @@ func runAutoToolHarness(t *testing.T, isStream bool, isAnthropic bool) {
 	// 延迟等待数据刷新写盘
 	time.Sleep(300 * time.Millisecond)
 
-	// 5. 验证是否生成了正确的 html数据
-	htmlDataPath := filepath.Join(svc.logDir, "html数据")
-	data, err := os.ReadFile(htmlDataPath)
+	// 5. 验证是否生成了正确的 sessions 数据 (直接从内存中读取)
+	svc.lock.RLock()
+	var details []interface{}
+	for _, sess := range svc.sessions {
+		details = append(details, sess)
+	}
+	svc.lock.RUnlock()
+
+	data, err := json.Marshal(details)
 	if err != nil {
-		t.Fatalf("failed to read html数据: %v", err)
+		t.Fatalf("failed to marshal sessions: %v", err)
 	}
 
 	var activeSessions []map[string]interface{}
 	if err := json.Unmarshal(data, &activeSessions); err != nil {
-		t.Fatalf("failed to unmarshal html数据: %v", err)
+		t.Fatalf("failed to unmarshal sessions: %v", err)
 	}
 
 	// 找到 chat_history 长度最长的那个 session，因为它代表最后一轮包含最完整历史的请求
@@ -811,7 +817,7 @@ func runAutoToolHarness(t *testing.T, isStream bool, isAnthropic bool) {
 	}
 
 	if maxHistSess == nil {
-		t.Fatalf("no session with chat history found in html数据")
+		t.Fatalf("no session with chat history found in memory")
 	}
 
 	t.Logf("found max chat_history length: %d", maxHistLen)
