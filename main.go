@@ -34,6 +34,7 @@ func main() {
 	flag.Parse()
 
 	var safeCfg *SafeConfig
+	shutdownCh := make(chan struct{})
 
 	for {
 		cfg, err := LoadConfig()
@@ -96,9 +97,12 @@ func main() {
 		}()
 
 		// 异步打开 GUI
-		shutdownCh := make(chan struct{})
 		if !*noGUI && c.AutoOpenGUI {
-			go openGUI(fmt.Sprintf("http://127.0.0.1:%d", c.Port), shutdownCh)
+			if !hasGUI() {
+				go openGUI(fmt.Sprintf("http://127.0.0.1:%d", c.Port), shutdownCh)
+			} else {
+				navigateGUI(fmt.Sprintf("http://127.0.0.1:%d", c.Port))
+			}
 		}
 
 		fmt.Printf("DSPlus v0.1.0\n")

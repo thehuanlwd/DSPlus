@@ -25,11 +25,13 @@ type LogEntry struct {
 	LatencyMs        int64             `json:"latency_ms"`
 	Transformed      bool              `json:"transformed"`
 	HasSystemPrompt  bool              `json:"has_system_prompt"`
+	SemanticType     string            `json:"semantic_type,omitempty"`
 	ResponseHeaders  map[string]string `json:"response_headers,omitempty"`
 	OriginalBody     string            `json:"original_body,omitempty"`
 	TransformedBody  string            `json:"transformed_body,omitempty"`
 	ResponseBody     string            `json:"response_body,omitempty"`
 	TokenUsage       *TokenUsage       `json:"token_usage,omitempty"`
+	Status           string            `json:"status,omitempty"`
 }
 
 type Logger struct {
@@ -81,10 +83,17 @@ func (l *Logger) UpdateLastResponse(id int64, respBody string) {
 }
 
 func (l *Logger) UpdateTokenUsage(id int64, usage *TokenUsage) {
+	l.UpdateTokenUsageAndStatus(id, usage, "")
+}
+
+func (l *Logger) UpdateTokenUsageAndStatus(id int64, usage *TokenUsage, status string) {
 	l.mu.Lock()
 	for i := len(l.entries) - 1; i >= 0; i-- {
 		if l.entries[i].ID == id {
 			l.entries[i].TokenUsage = usage
+			if status != "" {
+				l.entries[i].Status = status
+			}
 			// broadcast updated entry so frontend gets token stats without refresh
 			select {
 			case l.subscriber <- l.entries[i]:
@@ -96,6 +105,35 @@ func (l *Logger) UpdateTokenUsage(id int64, usage *TokenUsage) {
 	}
 	l.mu.Unlock()
 }
+
+func (l *Logger) UpdateOnResponse(id int64, statusCode int, latencyMs int64, status string, headers map[string]string, originalBody, transformedBody string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for i := len(l.entries) - 1; i >= 0; i-- {
+		if l.entries[i].ID == id {
+			l.entries[i].StatusCode = statusCode
+			l.entries[i].LatencyMs = latencyMs
+			if status != "" {
+				l.entries[i].Status = status
+			}
+			if headers != nil {
+				l.entries[i].ResponseHeaders = headers
+			}
+			if originalBody != "" {
+				l.entries[i].OriginalBody = originalBody
+			}
+			if transformedBody != "" {
+				l.entries[i].TransformedBody = transformedBody
+			}
+			select {
+			case l.subscriber <- l.entries[i]:
+			default:
+			}
+			return
+		}
+	}
+}
+
 
 func (l *Logger) Subscribe() <-chan LogEntry {
 	return l.subscriber

@@ -28,13 +28,7 @@ func handleGUI(w http.ResponseWriter, r *http.Request, l *Logger, cfg *SafeConfi
 		return
 	}
 	if r.URL.Path == "/index.html" {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		data, err := webFS.ReadFile("web/index.html")
-		if err != nil {
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-			return
-		}
-		w.Write(data)
+		http.Redirect(w, r, "/", http.StatusMovedPermanently)
 		return
 	}
 

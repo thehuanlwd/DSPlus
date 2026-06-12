@@ -8,6 +8,7 @@ import (
 )
 
 func openGUI(url string, _ chan<- struct{}) {
+	fallbackGUIStarted = true
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
 	case "windows":
@@ -18,4 +19,14 @@ func openGUI(url string, _ chan<- struct{}) {
 		cmd = exec.Command("xdg-open", url)
 	}
 	cmd.Start()
+}
+
+var fallbackGUIStarted bool
+
+func hasGUI() bool {
+	return fallbackGUIStarted
+}
+
+func navigateGUI(url string) {
+	// fallback 模式下由于是调用外部浏览器，所以这里不做实质处理
 }

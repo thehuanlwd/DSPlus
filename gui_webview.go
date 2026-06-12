@@ -79,7 +79,7 @@ var (
 	oldWndProc   uintptr
 	hTrayIcon    uintptr
 	nid           NOTIFYICONDATAT
-	wv           *webview.WebView
+	wv           webview.WebView
 	sdChan       chan<- struct{}
 	quitting     bool
 )
@@ -95,13 +95,17 @@ func openGUI(url string, shutdown chan<- struct{}) {
 	}
 
 	w := webview.New(true)
-	defer w.Destroy()
+	defer func() {
+		w.Destroy()
+		wv = nil
+		mainHwnd = 0
+	}()
 	w.SetTitle("DSPlus - DeepSeek V4 Proxy")
 	w.SetSize(1200, 800, webview.HintNone)
 	w.Navigate(url)
 
 	mainHwnd = uintptr(w.Window())
-	wv = &w
+	wv = w
 	sdChan = shutdown
 
 	cb := syscall.NewCallback(wndProc)
@@ -240,4 +244,16 @@ func wndProc(hwnd uintptr, msg uint32, wParam uintptr, lParam uintptr) uintptr {
 
 	ret, _, _ := pCallWindowProcW.Call(oldWndProc, hwnd, uintptr(msg), wParam, lParam)
 	return ret
+}
+
+func hasGUI() bool {
+	return wv != nil
+}
+
+func navigateGUI(url string) {
+	if wv != nil {
+		wv.Dispatch(func() {
+			wv.Navigate(url)
+		})
+	}
 }

@@ -28,12 +28,12 @@ const (
 	expectContinueTimeout = 1 * time.Second
 
 	// Streaming / buffering.
-	scannerInitialBuf = 65536   // 64 KB
-	scannerMaxBuf     = 1048576 // 1 MB
-	captureBufCap     = 1048576 // 1 MB
+	scannerInitialBuf = 65536    // 64 KB
+	scannerMaxBuf     = 10485760 // 10 MB
+	captureBufCap     = 10485760 // 10 MB
 
 	// Logging.
-	truncateBodyMaxLen = 524288 // 512 KB
+	truncateBodyMaxLen = 5242880 // 5 MB
 )
 
 // ProxyContext 封装代理请求转发的上下文参数，用于扁平化跨函数参数传递
@@ -50,6 +50,7 @@ type ProxyContext struct {
 	Data            map[string]interface{}
 	SessionID       string
 	TurnID          int
+	SemanticType    string
 }
 
 type ProxyServer struct {
@@ -137,6 +138,9 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		data = nil
 	}
 
+	// 在转换之前检测语义类型（转换会修改 data 中的 messages）
+	semanticType := detectSemanticType(data, format)
+
 	if format == "openai" {
 		hasSystemPrompt = strings.Contains(originalBody, `"role":"system"`) ||
 			strings.Contains(originalBody, `"role": "system"`)
@@ -188,25 +192,27 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 	proxyReq.Header.Set("Content-Length", strconv.Itoa(len(transformedBody)))
 	proxyReq.Host = ""
 
+	// ── 前置创建连接中的日志 ──
+	logID := s.logger.Add(LogEntry{
+		Time:             startTime,
+		Format:           format,
+		Method:           r.Method,
+		Path:             r.URL.Path,
+		StatusCode:       0,
+		LatencyMs:        0,
+		Transformed:      transformed,
+		HasSystemPrompt:  hasSystemPrompt,
+		SemanticType:     semanticType,
+		OriginalBody:     condStr(cfg.VerboseLogging, truncateBody(originalBody), ""),
+		TransformedBody:  condStr(cfg.VerboseLogging, truncateBody(string(transformedBody)), ""),
+		Status:           "connecting",
+	})
+
 	resp, err := s.client.Do(proxyReq)
 	if err != nil {
 		log.Printf("[proxy] upstream error: %v", err)
 		http.Error(w, "Upstream connection failed", http.StatusBadGateway)
-		entry := LogEntry{
-			Time:            startTime,
-			Format:          format,
-			Method:          r.Method,
-			Path:            r.URL.Path,
-			StatusCode:      502,
-			LatencyMs:       time.Since(startTime).Milliseconds(),
-			Transformed:     transformed,
-			HasSystemPrompt: hasSystemPrompt,
-		}
-		if cfg.VerboseLogging {
-			entry.OriginalBody = truncateBody(originalBody)
-			entry.TransformedBody = truncateBody(string(transformedBody))
-		}
-		s.logger.Add(entry)
+		s.logger.UpdateOnResponse(logID, 502, time.Since(startTime).Milliseconds(), "completed", nil, "", "")
 		return
 	}
 	defer resp.Body.Close()
@@ -231,6 +237,7 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 	ctx := &ProxyContext{
 		ResponseWriter:  w,
 		Response:        resp,
+		LogID:           logID,
 		StartTime:       startTime,
 		Format:          format,
 		Route:           r.URL.Path,
@@ -240,6 +247,7 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		Data:            data,
 		SessionID:       sessID,
 		TurnID:          turnID,
+		SemanticType:    semanticType,
 	}
 
 	// ── Anti-Loop detection ──
@@ -247,20 +255,7 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		if isStream {
 			// Streaming: forward chunks immediately, retry if truncated
 			latency := time.Since(startTime)
-			logID := s.logger.Add(LogEntry{
-				Time:             startTime,
-				Format:           format,
-				Method:           r.Method,
-				Path:             r.URL.Path,
-				StatusCode:       resp.StatusCode,
-				LatencyMs:        latency.Milliseconds(),
-				Transformed:      transformed,
-				HasSystemPrompt:  hasSystemPrompt,
-				ResponseHeaders:  respHeaders,
-				OriginalBody:     condStr(cfg.VerboseLogging, truncateBody(originalBody), ""),
-				TransformedBody:  condStr(cfg.VerboseLogging, truncateBody(string(transformedBody)), ""),
-			})
-			ctx.LogID = logID
+			s.logger.UpdateOnResponse(logID, resp.StatusCode, latency.Milliseconds(), "connecting", respHeaders, "", "")
 			copyHeaders(w.Header(), resp.Header)
 			w.WriteHeader(resp.StatusCode)
 			s.forwardStreamWithAntiLoop(ctx)
@@ -283,25 +278,14 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 
 		latency := time.Since(startTime)
-		logID := s.logger.Add(LogEntry{
-			Time:             startTime,
-			Format:           format,
-			Method:           r.Method,
-			Path:             r.URL.Path,
-			StatusCode:       resp.StatusCode,
-			LatencyMs:        latency.Milliseconds(),
-			Transformed:      transformed,
-			HasSystemPrompt:  hasSystemPrompt,
-			ResponseHeaders:  respHeaders,
-			OriginalBody:     condStr(cfg.VerboseLogging, truncateBody(originalBody), ""),
-			TransformedBody:  condStr(cfg.VerboseLogging, truncateBody(string(transformedBody)), ""),
-		})
-		ctx.LogID = logID
+		s.logger.UpdateOnResponse(logID, resp.StatusCode, latency.Milliseconds(), "connecting", respHeaders, "", "")
 
 		var pm TokenUsage
 		if u := extractUsageFromBody(string(bodyBytes)); u != nil {
-			s.logger.UpdateTokenUsage(logID, u)
+			s.logger.UpdateTokenUsageAndStatus(logID, u, "completed")
 			pm = *u
+		} else {
+			s.logger.UpdateTokenUsageAndStatus(logID, nil, "completed")
 		}
 		if cfg.VerboseLogging {
 			s.logger.UpdateLastResponse(logID, truncateBody(string(bodyBytes)))
@@ -320,7 +304,7 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 			latency.Milliseconds(),
 			detectModel(originalBody),
 			upstream,
-			buildRequestMeta(data, format, transformed, cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none"),
+			buildRequestMeta(data, format, transformed, cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none", semanticType),
 			ResponseMeta{
 				FinishReason:     detectBufferFinishReason(bodyBytes),
 				PromptTokens:     int(pm.Prompt),
@@ -343,21 +327,7 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	// ── Normal path (anti-loop disabled): stream/buffer to client immediately ──
 	latency := time.Since(startTime)
-
-	logID := s.logger.Add(LogEntry{
-		Time:             startTime,
-		Format:           format,
-		Method:           r.Method,
-		Path:             r.URL.Path,
-		StatusCode:       resp.StatusCode,
-		LatencyMs:        latency.Milliseconds(),
-		Transformed:      transformed,
-		HasSystemPrompt:  hasSystemPrompt,
-		ResponseHeaders:  respHeaders,
-		OriginalBody:     condStr(cfg.VerboseLogging, truncateBody(originalBody), ""),
-		TransformedBody:  condStr(cfg.VerboseLogging, truncateBody(string(transformedBody)), ""),
-	})
-	ctx.LogID = logID
+	s.logger.UpdateOnResponse(logID, resp.StatusCode, latency.Milliseconds(), "connecting", respHeaders, "", "")
 
 	copyHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
@@ -453,6 +423,12 @@ func (s *ProxyServer) forwardStream(ctx *ProxyContext) {
 	var reasoningBuilder strings.Builder
 	var contentBuilder strings.Builder
 
+	var lastPushTime time.Time
+	var estPrompt int64
+	if ctx.Data != nil {
+		estPrompt = int64(float64(len(ctx.OriginalBody)) / 2.5)
+	}
+
 	for scanner.Scan() {
 		line := scanner.Text()
 		line = replaceDSMLMarkers(line)
@@ -478,6 +454,20 @@ func (s *ProxyServer) forwardStream(ctx *ProxyContext) {
 			if delta.Content != "" {
 				contentBuilder.WriteString(delta.Content)
 			}
+
+			if delta.ReasoningContent != "" || delta.Content != "" {
+				now := time.Now()
+				if lastPushTime.IsZero() || now.Sub(lastPushTime) >= 200*time.Millisecond {
+					lastPushTime = now
+					totalChars := len(reasoningBuilder.String()) + len(contentBuilder.String())
+					estCompletion := int64(float64(totalChars) / 2.3)
+					s.logger.UpdateTokenUsageAndStatus(ctx.LogID, &TokenUsage{
+						Prompt:     estPrompt,
+						Completion: estCompletion,
+						Total:      estPrompt + estCompletion,
+					}, "streaming")
+				}
+			}
 		}
 	}
 
@@ -486,7 +476,19 @@ func (s *ProxyServer) forwardStream(ctx *ProxyContext) {
 	}
 
 	if lastUsage != nil {
-		s.logger.UpdateTokenUsage(ctx.LogID, lastUsage)
+		s.logger.UpdateTokenUsageAndStatus(ctx.LogID, lastUsage, "completed")
+	} else {
+		totalChars := len(reasoningBuilder.String()) + len(contentBuilder.String())
+		estCompletion := int64(float64(totalChars) / 2.3)
+		var estPrompt int64
+		if ctx.Data != nil {
+			estPrompt = int64(float64(len(ctx.OriginalBody)) / 2.5)
+		}
+		s.logger.UpdateTokenUsageAndStatus(ctx.LogID, &TokenUsage{
+			Prompt:     estPrompt,
+			Completion: estCompletion,
+			Total:      estPrompt + estCompletion,
+		}, "completed")
 	}
 	if cfg.VerboseLogging {
 		s.logger.UpdateLastResponse(ctx.LogID, capture.String())
@@ -509,7 +511,7 @@ func (s *ProxyServer) forwardStream(ctx *ProxyContext) {
 		time.Since(ctx.StartTime).Milliseconds(),
 		detectModel(ctx.OriginalBody),
 		s.selectUpstream(ctx.Format),
-		buildRequestMeta(ctx.Data, ctx.Format, ctx.Transformed, cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none"),
+		buildRequestMeta(ctx.Data, ctx.Format, ctx.Transformed, cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none", ctx.SemanticType),
 		ResponseMeta{
 			FinishReason:     finishReason,
 			PromptTokens:     int(pm.Prompt),
@@ -530,6 +532,7 @@ func (s *ProxyServer) forwardBuffered(ctx *ProxyContext) {
 	bodyBytes, err := io.ReadAll(ctx.Response.Body)
 	if err != nil {
 		log.Printf("[proxy] forwardBuffered read error: %v", err)
+		s.logger.UpdateTokenUsageAndStatus(ctx.LogID, nil, "completed")
 		return
 	}
 	bodyBytes = replaceDSMLMarkersBytes(bodyBytes)
@@ -537,8 +540,10 @@ func (s *ProxyServer) forwardBuffered(ctx *ProxyContext) {
 
 	var lastUsage *TokenUsage
 	if u := extractUsageFromBody(string(bodyBytes)); u != nil {
-		s.logger.UpdateTokenUsage(ctx.LogID, u)
+		s.logger.UpdateTokenUsageAndStatus(ctx.LogID, u, "completed")
 		lastUsage = u
+	} else {
+		s.logger.UpdateTokenUsageAndStatus(ctx.LogID, nil, "completed")
 	}
 	if cfg.VerboseLogging {
 		s.logger.UpdateLastResponse(ctx.LogID, truncateBody(string(bodyBytes)))
@@ -563,7 +568,7 @@ func (s *ProxyServer) forwardBuffered(ctx *ProxyContext) {
 		time.Since(ctx.StartTime).Milliseconds(),
 		detectModel(ctx.OriginalBody),
 		s.selectUpstream(ctx.Format),
-		buildRequestMeta(ctx.Data, ctx.Format, ctx.Transformed, cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none"),
+		buildRequestMeta(ctx.Data, ctx.Format, ctx.Transformed, cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none", ctx.SemanticType),
 		ResponseMeta{
 			FinishReason:     fr,
 			PromptTokens:     int(pm.Prompt),
@@ -650,6 +655,11 @@ func (s *ProxyServer) streamAndMonitorPhase1(ctx *ProxyContext, state *antiLoopS
 	var analyzeTriggered bool
 	chunkCount := 0
 	lastTracedTokens := 0
+	var lastPushTime time.Time
+	var estPrompt int64
+	if ctx.Data != nil {
+		estPrompt = int64(float64(len(ctx.OriginalBody)) / 2.5)
+	}
 
 	for state.scanner.Scan() {
 		state.watchdogStop = resetProgressWatchdog(state.watchdogStop)
@@ -788,7 +798,7 @@ func (s *ProxyServer) streamAndMonitorPhase1(ctx *ProxyContext, state *antiLoopS
 						0,
 						"deepseek-chat",
 						cfg.OpenAIUpstream,
-						buildRequestMeta(ctx.Data, ctx.Format, ctx.Transformed, cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none"),
+						buildRequestMeta(ctx.Data, ctx.Format, ctx.Transformed, cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none", ctx.SemanticType),
 						ResponseMeta{
 							AnalyzerJudgment: result.analysis.Judgment,
 							FinishReason:     "stop",
@@ -862,6 +872,19 @@ func (s *ProxyServer) streamAndMonitorPhase1(ctx *ProxyContext, state *antiLoopS
 		if state.canFlush {
 			state.flusher.Flush()
 		}
+
+		// 节流推送临时估计 Token
+		now := time.Now()
+		if lastPushTime.IsZero() || now.Sub(lastPushTime) >= 200*time.Millisecond {
+			lastPushTime = now
+			totalChars := state.reasoningBuilder.Len() + state.contentBuilder.Len()
+			estCompletion := int64(float64(totalChars) / 2.3)
+			s.logger.UpdateTokenUsageAndStatus(ctx.LogID, &TokenUsage{
+				Prompt:     estPrompt,
+				Completion: estCompletion,
+				Total:      estPrompt + estCompletion,
+			}, "streaming")
+		}
 	}
 
 	state.scannerExitedNormally = true
@@ -927,6 +950,19 @@ func (s *ProxyServer) executeRetryPhase2(ctx *ProxyContext, state *antiLoopState
 		}
 		return
 	}
+
+	// 触发 retry 前，推送 paused 状态
+	var estPrompt int64
+	if ctx.Data != nil {
+		estPrompt = int64(float64(len(ctx.OriginalBody)) / 2.5)
+	}
+	totalChars := state.reasoningBuilder.Len() + state.contentBuilder.Len()
+	estCompletion := int64(float64(totalChars) / 2.3)
+	s.logger.UpdateTokenUsageAndStatus(ctx.LogID, &TokenUsage{
+		Prompt:     estPrompt,
+		Completion: estCompletion,
+		Total:      estPrompt + estCompletion,
+	}, "paused")
 
 	reasoningContent := state.reasoningBuilder.String()
 	phase1Content := state.contentBuilder.String()
@@ -1010,7 +1046,7 @@ func (s *ProxyServer) executeRetryPhase2(ctx *ProxyContext, state *antiLoopState
 		0,
 		cfg.AntiLoopRetryModel,
 		s.selectUpstream(ctx.Format),
-		buildRequestMeta(ctx.Data, ctx.Format, ctx.Transformed, cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none"),
+		buildRequestMeta(ctx.Data, ctx.Format, ctx.Transformed, cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none", ctx.SemanticType),
 		ResponseMeta{
 			FinishReason:     retryFR,
 			PromptTokens:     int(rpm.Prompt),
@@ -1045,7 +1081,19 @@ func (s *ProxyServer) finalizeStream(ctx *ProxyContext, state *antiLoopState) {
 	trace("stream_done req_id=%d", state.reqID)
 
 	if state.lastUsage != nil {
-		s.logger.UpdateTokenUsage(ctx.LogID, state.lastUsage)
+		s.logger.UpdateTokenUsageAndStatus(ctx.LogID, state.lastUsage, "completed")
+	} else {
+		totalChars := state.reasoningBuilder.Len() + state.contentBuilder.Len()
+		estCompletion := int64(float64(totalChars) / 2.3)
+		var estPrompt int64
+		if ctx.Data != nil {
+			estPrompt = int64(float64(len(ctx.OriginalBody)) / 2.5)
+		}
+		s.logger.UpdateTokenUsageAndStatus(ctx.LogID, &TokenUsage{
+			Prompt:     estPrompt,
+			Completion: estCompletion,
+			Total:      estPrompt + estCompletion,
+		}, "completed")
 	}
 	if cfg.VerboseLogging {
 		s.logger.UpdateLastResponse(ctx.LogID, state.capture.String())
@@ -1067,7 +1115,7 @@ func (s *ProxyServer) finalizeStream(ctx *ProxyContext, state *antiLoopState) {
 		time.Since(ctx.StartTime).Milliseconds(),
 		detectModel(ctx.OriginalBody),
 		s.selectUpstream(ctx.Format),
-		buildRequestMeta(ctx.Data, ctx.Format, ctx.Transformed, cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none"),
+		buildRequestMeta(ctx.Data, ctx.Format, ctx.Transformed, cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none", ctx.SemanticType),
 		ResponseMeta{
 			FinishReason:      state.finishReason,
 			PromptTokens:      int(pm.Prompt),
