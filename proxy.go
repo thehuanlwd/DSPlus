@@ -20,11 +20,11 @@ import (
 
 const (
 	// HTTP transport.
-	dialTimeout          = 30 * time.Second
-	keepAlive            = 30 * time.Second
-	maxIdleConns         = 100
-	idleConnTimeout      = 90 * time.Second
-	tlsHandshakeTimeout  = 10 * time.Second
+	dialTimeout           = 30 * time.Second
+	keepAlive             = 30 * time.Second
+	maxIdleConns          = 100
+	idleConnTimeout       = 90 * time.Second
+	tlsHandshakeTimeout   = 10 * time.Second
 	expectContinueTimeout = 1 * time.Second
 
 	// Streaming / buffering.
@@ -194,18 +194,18 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	// ── 前置创建连接中的日志 ──
 	logID := s.logger.Add(LogEntry{
-		Time:             startTime,
-		Format:           format,
-		Method:           r.Method,
-		Path:             r.URL.Path,
-		StatusCode:       0,
-		LatencyMs:        0,
-		Transformed:      transformed,
-		HasSystemPrompt:  hasSystemPrompt,
-		SemanticType:     semanticType,
-		OriginalBody:     condStr(cfg.VerboseLogging, truncateBody(originalBody), ""),
-		TransformedBody:  condStr(cfg.VerboseLogging, truncateBody(string(transformedBody)), ""),
-		Status:           "connecting",
+		Time:            startTime,
+		Format:          format,
+		Method:          r.Method,
+		Path:            r.URL.Path,
+		StatusCode:      0,
+		LatencyMs:       0,
+		Transformed:     transformed,
+		HasSystemPrompt: hasSystemPrompt,
+		SemanticType:    semanticType,
+		OriginalBody:    condStr(cfg.VerboseLogging, truncateBody(originalBody), ""),
+		TransformedBody: condStr(cfg.VerboseLogging, truncateBody(string(transformedBody)), ""),
+		Status:          "connecting",
 	})
 
 	resp, err := s.client.Do(proxyReq)
@@ -292,7 +292,7 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// 发射非流式 TraceEvent
-		s.analysisSvc.SubmitEvent(NewTraceEvent(
+		traceEv := NewTraceEvent(
 			startTime,
 			logID,
 			sessID,
@@ -310,14 +310,16 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 				PromptTokens:     int(pm.Prompt),
 				CompletionTokens: int(pm.Completion),
 				TotalTokens:      int(pm.Total),
-				CacheHitTokens:    int(pm.CacheHit),
-				CacheMissTokens:   int(pm.CacheMiss),
-				ReasoningContent:  parseAssistantReasoning(string(bodyBytes), format),
-				Content:           parseAssistantContent(string(bodyBytes), format),
+				CacheHitTokens:   int(pm.CacheHit),
+				CacheMissTokens:  int(pm.CacheMiss),
+				ReasoningContent: parseAssistantReasoning(string(bodyBytes), format),
+				Content:          parseAssistantContent(string(bodyBytes), format),
 			},
 			originalBody,
 			string(bodyBytes),
-		))
+		)
+		traceEv.UpstreamRequest = string(transformedBody)
+		s.analysisSvc.SubmitEvent(traceEv)
 
 		copyHeaders(w.Header(), resp.Header)
 		w.WriteHeader(resp.StatusCode)
@@ -499,7 +501,7 @@ func (s *ProxyServer) forwardStream(ctx *ProxyContext) {
 	if lastUsage != nil {
 		pm = *lastUsage
 	}
-	s.analysisSvc.SubmitEvent(NewTraceEvent(
+	traceEv := NewTraceEvent(
 		ctx.StartTime,
 		ctx.LogID,
 		ctx.SessionID,
@@ -517,14 +519,16 @@ func (s *ProxyServer) forwardStream(ctx *ProxyContext) {
 			PromptTokens:     int(pm.Prompt),
 			CompletionTokens: int(pm.Completion),
 			TotalTokens:      int(pm.Total),
-			CacheHitTokens:    int(pm.CacheHit),
-			CacheMissTokens:   int(pm.CacheMiss),
-			ReasoningContent:  reasoningBuilder.String(),
-			Content:           contentBuilder.String(),
+			CacheHitTokens:   int(pm.CacheHit),
+			CacheMissTokens:  int(pm.CacheMiss),
+			ReasoningContent: reasoningBuilder.String(),
+			Content:          contentBuilder.String(),
 		},
 		ctx.OriginalBody,
 		capture.String(),
-	))
+	)
+	traceEv.UpstreamRequest = string(ctx.TransformedBody)
+	s.analysisSvc.SubmitEvent(traceEv)
 }
 
 func (s *ProxyServer) forwardBuffered(ctx *ProxyContext) {
@@ -556,7 +560,7 @@ func (s *ProxyServer) forwardBuffered(ctx *ProxyContext) {
 	if lastUsage != nil {
 		pm = *lastUsage
 	}
-	s.analysisSvc.SubmitEvent(NewTraceEvent(
+	traceEv := NewTraceEvent(
 		ctx.StartTime,
 		ctx.LogID,
 		ctx.SessionID,
@@ -574,14 +578,16 @@ func (s *ProxyServer) forwardBuffered(ctx *ProxyContext) {
 			PromptTokens:     int(pm.Prompt),
 			CompletionTokens: int(pm.Completion),
 			TotalTokens:      int(pm.Total),
-			CacheHitTokens:    int(pm.CacheHit),
-			CacheMissTokens:   int(pm.CacheMiss),
-			ReasoningContent:  parseAssistantReasoning(string(bodyBytes), ctx.Format),
-			Content:           parseAssistantContent(string(bodyBytes), ctx.Format),
+			CacheHitTokens:   int(pm.CacheHit),
+			CacheMissTokens:  int(pm.CacheMiss),
+			ReasoningContent: parseAssistantReasoning(string(bodyBytes), ctx.Format),
+			Content:          parseAssistantContent(string(bodyBytes), ctx.Format),
 		},
 		ctx.OriginalBody,
 		string(bodyBytes),
-	))
+	)
+	traceEv.UpstreamRequest = string(ctx.TransformedBody)
+	s.analysisSvc.SubmitEvent(traceEv)
 }
 
 type antiLoopState struct {
@@ -615,7 +621,7 @@ func (s *ProxyServer) initAntiLoopState(ctx *ProxyContext) *antiLoopState {
 
 	reqID := nextTraceReqID()
 	parentEventID := "ev_" + strconv.FormatInt(ctx.StartTime.UnixNano(), 36)
-	
+
 	traceKeyvals("event", "phase1_start", "req_id", reqID, "threshold", cfg.AntiLoopCheckTokens,
 		"retry_model", cfg.AntiLoopRetryModel, "format", ctx.Format)
 
@@ -803,9 +809,10 @@ func (s *ProxyServer) streamAndMonitorPhase1(ctx *ProxyContext, state *antiLoopS
 							AnalyzerJudgment: result.analysis.Judgment,
 							FinishReason:     "stop",
 						},
-						"Parallel Analysis Target: " + state.reasoningBuilder.String(),
+						"Parallel Analysis Target: "+state.reasoningBuilder.String(),
 						fmt.Sprintf("Judgment: %s\nGuidance: %s", result.analysis.Judgment, result.analysis.Guidance),
 					)
+					anaEv.UpstreamRequest = anaEv.RawRequest
 					anaEv.ID = analyzerEventID
 					anaEv.ParentID = state.parentEventID
 					s.analysisSvc.SubmitEvent(anaEv)
@@ -1059,6 +1066,7 @@ func (s *ProxyServer) executeRetryPhase2(ctx *ProxyContext, state *antiLoopState
 		string(state.retryBody),
 		state.capture.String(),
 	)
+	retryEv.UpstreamRequest = string(state.retryBody)
 	retryEv.ID = retryEventID
 	retryEv.ParentID = state.parentEventID
 	s.analysisSvc.SubmitEvent(retryEv)
@@ -1130,6 +1138,7 @@ func (s *ProxyServer) finalizeStream(ctx *ProxyContext, state *antiLoopState) {
 		ctx.OriginalBody,
 		state.capture.String(),
 	)
+	primaryEv.UpstreamRequest = string(ctx.TransformedBody)
 	primaryEv.ID = state.parentEventID
 	s.analysisSvc.SubmitEvent(primaryEv)
 }

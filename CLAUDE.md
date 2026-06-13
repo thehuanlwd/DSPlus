@@ -4,7 +4,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-DSPlus 是一个本地运行的轻量级 API 中转代理，专为 DeepSeek V4 模型设计。核心功能是将 System Prompt 重组到用户消息中（因为 DeepSeek V4 的系统提示词优先级弱于首条用户消息），并内置防思维循环引擎。
+DSPlus 是一个本地运行的 **分析+强化系统**。它作为一个轻量级的 API 中转代理，专为 DeepSeek 等模型设计。它能够完整分析原始请求和返回数据，其核心系统能力包含：
+
+1. **分析系统**：自动将代理流量归入会话（Session）与轮次（Turn），无损记录并完整分析原始请求和响应数据，支持自包含哈希去重归档和 Markdown 诊断报告导出。
+2. **强化系统**：
+   - **提示词强化**：将 System Prompt 重组到合适的位置以适应特定模型缓存，支持注入额外的高优先级全局指令。
+   - **防循环强化**：内置防思维循环引擎，支持并行检测判定与模型退避重试，以解决推理模型（如 DeepSeek-R1）在工具调用场景下的死循环问题。
 
 ## 常用命令
 
@@ -54,6 +59,7 @@ go test -v -run TestTransformOpenAIInPlace ./...  # 单个测试
 | `transform.go` | System Prompt 重组（OpenAI + Anthropic） | `transformOpenAIInPlace()`, `transformAnthropicInPlace()` |
 | `proxy.go` | HTTP 代理核心 + 防循环流引擎 | `forwardStreamWithAntiLoop()`, `injectThinkingParams()` |
 | `retry.go` | 防循环：子Agent分析、并行检测、重试 | `callAntiLoopAnalyzerWith()`, `parallelAnalyze()` |
+| `analysis.go` | 会话聚合分析与自包含哈希去重日志 | `InitAnalysisService()`, `SubmitEvent()`, `loadHistoryFromDisk()` |
 | `logger.go` | 环形缓冲日志 + Token 统计 + WebSocket 广播 | `NewLogger()`, `UpdateTokenUsage()` |
 | `gui.go` | 内嵌 Web 前端 + REST/WebSocket API | `handleGUI()` |
 | `gui_webview.go` | WebView2 桌面窗口（CGO 模式） | `openGUI()`, `hasGUI()` |
@@ -69,6 +75,7 @@ go test -v -run TestTransformOpenAIInPlace ./...  # 单个测试
    - 启发式判定（content==0 && reasoning 过高）
    - 并行分析器（goroutine，不中断主流程）
    - finish_reason="length" 兜底
+5. **自包含哈希去重日志**：`AnalysisService` 对大段 system prompt 计算 MD5，同天内仅首发写入明文，后续使用哈希引用，并在读盘时自包含还原，解决无损存储与磁盘体积的矛盾。
 
 ### API 端点
 
@@ -80,6 +87,10 @@ go test -v -run TestTransformOpenAIInPlace ./...  # 单个测试
 | `/api/status` | 服务状态 JSON |
 | `/api/logs` | 请求日志列表 |
 | `/api/config` | 获取/更新配置 |
+| `/api/analysis/status` | 获取分析服务运行状态 |
+| `/api/analysis/sessions` | 获取分析会话列表 |
+| `/api/analysis/sessions/{id}` | 获取特定会话详情 |
+| `/api/analysis/sessions/{id}/export.md` | 导出特定会话的诊断报告 |
 | `/ws` | WebSocket 实时推送 |
 
 ## 配置说明

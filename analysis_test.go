@@ -2,6 +2,9 @@ package main
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -45,13 +48,13 @@ func TestSessionInference(t *testing.T) {
 	svc := InitAnalysisService(NewSafeConfig(cfg))
 
 	now := time.Now()
-	
+
 	// 第一个请求
 	ev1 := &TraceEvent{
-		ID:        "ev1",
-		Time:      now,
-		Phase:     "primary",
-		Format:    "openai",
+		ID:         "ev1",
+		Time:       now,
+		Phase:      "primary",
+		Format:     "openai",
 		RawRequest: `{"messages": [{"role": "user", "content": "first message"}]}`,
 	}
 	svc.processEvent(ev1)
@@ -65,10 +68,10 @@ func TestSessionInference(t *testing.T) {
 
 	// 相同的指纹在短时间内，现在由于实现了会话合并，应该产生相同的 SessionID，且 TurnID 递增
 	ev2 := &TraceEvent{
-		ID:        "ev2",
-		Time:      now.Add(1 * time.Minute),
-		Phase:     "primary",
-		Format:    "openai",
+		ID:         "ev2",
+		Time:       now.Add(1 * time.Minute),
+		Phase:      "primary",
+		Format:     "openai",
 		RawRequest: `{"messages": [{"role": "user", "content": "first message"}, {"role": "user", "content": "second message"}]}`,
 	}
 	svc.processEvent(ev2)
@@ -91,7 +94,7 @@ func TestFormatCacheRatio(t *testing.T) {
 		{0, 100, "0%"},
 		{0, 0, "0%"},
 		{9999, 1, "99.9%"}, // 接近但不等于100%
-		{1, 9999, "0.1%"}, // 接近但不等于0%
+		{1, 9999, "0.1%"},  // 接近但不等于0%
 		{50, 50, "50.0%"},
 		{75, 25, "75.0%"},
 	}
@@ -157,7 +160,6 @@ func TestGetFullChatHistory(t *testing.T) {
 	sess.Turns[2] = &ConversationTurn{
 		TurnID: 2,
 		ChatHistory: []ChatMessage{
-			{Role: "user", Content: "hello"},
 			{Role: "assistant", Content: "hi"},
 			{Role: "user", Content: "how are you"},
 		},
@@ -172,3 +174,121 @@ func TestGetFullChatHistory(t *testing.T) {
 	}
 }
 
+func TestLogDeduplication(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := DefaultConfig()
+	cfg.AnalysisEnabled = true
+
+	svc := &AnalysisService{
+		config:        NewSafeConfig(cfg),
+		sessions:      make(map[string]*ConversationSession),
+		eventChan:     make(chan *TraceEvent, 100),
+		logDir:        tempDir,
+		shutdownCh:    make(chan struct{}),
+		writtenHashes: make(map[string]bool),
+	}
+
+	// 构造 600 字节的 System Prompt
+	longSystemPrompt := "SYSTEM PROMPT: "
+	for len(longSystemPrompt) < 600 {
+		longSystemPrompt += "This is a very long system prompt used for testing logging deduplication function. "
+	}
+
+	now := time.Now()
+
+	// 1. 提交第一个包含明文 System Prompt 的事件
+	ev1 := &TraceEvent{
+		ID:        "ev1",
+		Time:      now,
+		SessionID: "sess_1",
+		TurnID:    1,
+		Phase:     "primary",
+		ChatHistory: []ChatMessage{
+			{Role: "system", Content: longSystemPrompt},
+			{Role: "user", Content: "hello"},
+		},
+		RawRequest:  `{"messages":[{"role":"system","content":"` + longSystemPrompt + `"}]}`,
+		RawResponse: `{"choices":[{"message":{"content":"ok"}}]}`,
+	}
+
+	svc.writeToDisk(ev1)
+
+	// 2. 提交第二个具有完全相同 System Prompt 的事件
+	ev2 := &TraceEvent{
+		ID:        "ev2",
+		Time:      now.Add(1 * time.Second),
+		SessionID: "sess_2",
+		TurnID:    1,
+		Phase:     "primary",
+		ChatHistory: []ChatMessage{
+			{Role: "system", Content: longSystemPrompt},
+			{Role: "user", Content: "world"},
+		},
+		RawRequest:  `{"messages":[{"role":"system","content":"` + longSystemPrompt + `"}]}`,
+		RawResponse: `{"choices":[{"message":{"content":"ok"}}]}`,
+	}
+	svc.writeToDisk(ev2)
+
+	// 3. 读取磁盘上写入的原始文件，验证 ContentRef 生效且可无损回读
+	fileName := now.Format("2006-01-02") + ".jsonl"
+	filePath := filepath.Join(tempDir, fileName)
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		t.Fatalf("failed to read written log: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 log lines, got %d", len(lines))
+	}
+
+	var savedEv1, savedEv2 TraceEvent
+	json.Unmarshal([]byte(lines[0]), &savedEv1)
+	json.Unmarshal([]byte(lines[1]), &savedEv2)
+
+	if len(savedEv1.ChatHistory) < 1 || savedEv1.ChatHistory[0].ContentRef == nil {
+		t.Fatalf("ev1: expected system content to be stored as ContentRef")
+	}
+	if len(savedEv2.ChatHistory) < 1 || savedEv2.ChatHistory[0].ContentRef == nil {
+		t.Fatalf("ev2: expected system content to be stored as ContentRef")
+	}
+	if savedEv1.ChatHistory[0].ContentRef.Hash != savedEv2.ChatHistory[0].ContentRef.Hash {
+		t.Errorf("expected repeated system prompt to reuse same content hash")
+	}
+	fullSystem, err := svc.ResolveContent(*savedEv1.ChatHistory[0].ContentRef)
+	if err != nil {
+		t.Fatalf("failed to resolve system prompt ref: %v", err)
+	}
+	if fullSystem != longSystemPrompt {
+		t.Errorf("expected full system prompt to round trip")
+	}
+	if savedEv1.RawRequest != "" || savedEv1.RawResponse != "" {
+		t.Errorf("expected raw bodies to be stored by ref, not inline")
+	}
+	if savedEv1.RawRequestRef == nil || savedEv1.RawResponseRef == nil {
+		t.Fatalf("expected raw request/response refs to be present")
+	}
+
+	// 4. 清空内存状态并调用 loadHistoryFromDisk 加载，验证索引和引用可恢复
+	svc.sessions = make(map[string]*ConversationSession)
+	svc.loadHistoryFromDisk()
+
+	sess1, ok1 := svc.sessions["sess_1"]
+	sess2, ok2 := svc.sessions["sess_2"]
+	if !ok1 || !ok2 {
+		t.Fatalf("sessions not restored properly")
+	}
+
+	turn1, ok1 := sess1.Turns[1]
+	turn2, ok2 := sess2.Turns[1]
+	if !ok1 || !ok2 {
+		t.Fatalf("turns not restored properly")
+	}
+
+	if len(turn1.ChatHistory) < 1 || turn1.ChatHistory[0].ContentRef == nil {
+		t.Errorf("turn1: expected system content ref to be restored")
+	}
+	if len(turn2.ChatHistory) < 1 || turn2.ChatHistory[0].ContentRef == nil {
+		t.Errorf("turn2: expected system content ref to be restored")
+	}
+}

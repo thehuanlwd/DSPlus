@@ -1,8 +1,13 @@
 package main
 
 import (
+	"compress/gzip"
+	"crypto/md5"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -14,32 +19,56 @@ import (
 )
 
 type ChatMessage struct {
-	Role             string   `json:"role"`
-	Content          string   `json:"content,omitempty"`
-	ReasoningContent string   `json:"reasoning_content,omitempty"`
-	ToolCalls        []string `json:"tool_calls,omitempty"`
+	Role                string       `json:"role"`
+	Content             string       `json:"content,omitempty"`
+	ContentRef          *ContentRef  `json:"content_ref,omitempty"`
+	ReasoningContent    string       `json:"reasoning_content,omitempty"`
+	ReasoningContentRef *ContentRef  `json:"reasoning_content_ref,omitempty"`
+	ToolCalls           []string     `json:"tool_calls,omitempty"`
+	ToolCallRefs        []ContentRef `json:"tool_call_refs,omitempty"`
+}
+
+type ContentRef struct {
+	Kind            string `json:"kind"`
+	Hash            string `json:"hash"`
+	Path            string `json:"path"`
+	SizeBytes       int64  `json:"size_bytes"`
+	CompressedBytes int64  `json:"compressed_bytes,omitempty"`
+	Preview         string `json:"preview,omitempty"`
+}
+
+type storedContentBlob struct {
+	Kind     string `json:"kind"`
+	Hash     string `json:"hash"`
+	Encoding string `json:"encoding"`
+	Content  string `json:"content"`
 }
 
 // TraceEvent 代表代理过程中的一次结构化事实事件
 type TraceEvent struct {
-	ID          string        `json:"id"`
-	ParentID    string        `json:"parent_id,omitempty"` // 用于关联重试或分析子事件
-	Time        time.Time     `json:"time"`
-	LogID       int64         `json:"log_id"`
-	SessionID   string        `json:"session_id"`
-	TurnID      int           `json:"turn_id"`
-	Phase       string        `json:"phase"` // primary, analyzer, retry, debug
-	Format      string        `json:"format"`
-	Route       string        `json:"route"`
-	Status      int           `json:"status"`
-	LatencyMs   int64         `json:"latency_ms"`
-	Model       string        `json:"model"`
-	Upstream    string        `json:"upstream"`
-	Request     RequestMeta   `json:"request"`
-	Response    ResponseMeta  `json:"response"`
-	RawRequest  string        `json:"raw_request,omitempty"`  // 详细记录时可用，持久化可选择性丢弃
-	RawResponse string        `json:"raw_response,omitempty"` // 详细记录时可用，持久化可选择性丢弃
-	ChatHistory []ChatMessage `json:"chat_history,omitempty"` // 持久化清洗后的聊天历史
+	ID                 string        `json:"id"`
+	ParentID           string        `json:"parent_id,omitempty"` // 用于关联重试或分析子事件
+	Time               time.Time     `json:"time"`
+	LogID              int64         `json:"log_id"`
+	SessionID          string        `json:"session_id"`
+	TurnID             int           `json:"turn_id"`
+	Phase              string        `json:"phase"` // primary, analyzer, retry, debug
+	Format             string        `json:"format"`
+	Route              string        `json:"route"`
+	Status             int           `json:"status"`
+	LatencyMs          int64         `json:"latency_ms"`
+	Model              string        `json:"model"`
+	Upstream           string        `json:"upstream"`
+	Request            RequestMeta   `json:"request"`
+	Response           ResponseMeta  `json:"response"`
+	RawRequest         string        `json:"raw_request,omitempty"` // 详细记录时可用，持久化可选择性丢弃
+	RawRequestRef      *ContentRef   `json:"raw_request_ref,omitempty"`
+	UpstreamRequest    string        `json:"upstream_request,omitempty"`
+	UpstreamRequestRef *ContentRef   `json:"upstream_request_ref,omitempty"`
+	RawResponse        string        `json:"raw_response,omitempty"` // 详细记录时可用，持久化可选择性丢弃
+	RawResponseRef     *ContentRef   `json:"raw_response_ref,omitempty"`
+	ChatHistory        []ChatMessage `json:"chat_history,omitempty"` // 持久化清洗后的聊天历史
+	StorageError       string        `json:"storage_error,omitempty"`
 }
 
 // RequestMeta 存储请求关键元数据
@@ -60,51 +89,57 @@ type RequestMeta struct {
 
 // ResponseMeta 存储响应元数据
 type ResponseMeta struct {
-	FinishReason      string   `json:"finish_reason"`
-	PromptTokens      int      `json:"prompt_tokens"`
-	CompletionTokens  int      `json:"completion_tokens"`
-	TotalTokens       int      `json:"total_tokens"`
-	CacheHitTokens    int      `json:"cache_hit_tokens"`
-	CacheMissTokens   int      `json:"cache_miss_tokens"`
-	ReasoningTokens   int      `json:"reasoning_tokens"`
-	ReasoningContent  string   `json:"reasoning_content"`
-	Content           string   `json:"content,omitempty"`
-	ToolCalls         []string `json:"tool_calls,omitempty"`
-	AntiLoopTriggered bool     `json:"antiloop_triggered"`
-	AnalyzerJudgment  string   `json:"analyzer_judgment"`
-	RetryModel        string   `json:"retry_model"`
+	FinishReason        string       `json:"finish_reason"`
+	PromptTokens        int          `json:"prompt_tokens"`
+	CompletionTokens    int          `json:"completion_tokens"`
+	TotalTokens         int          `json:"total_tokens"`
+	CacheHitTokens      int          `json:"cache_hit_tokens"`
+	CacheMissTokens     int          `json:"cache_miss_tokens"`
+	ReasoningTokens     int          `json:"reasoning_tokens"`
+	ReasoningContent    string       `json:"reasoning_content"`
+	ReasoningContentRef *ContentRef  `json:"reasoning_content_ref,omitempty"`
+	Content             string       `json:"content,omitempty"`
+	ContentRef          *ContentRef  `json:"content_ref,omitempty"`
+	ToolCalls           []string     `json:"tool_calls,omitempty"`
+	ToolCallRefs        []ContentRef `json:"tool_call_refs,omitempty"`
+	AntiLoopTriggered   bool         `json:"antiloop_triggered"`
+	AnalyzerJudgment    string       `json:"analyzer_judgment"`
+	RetryModel          string       `json:"retry_model"`
 }
 
 // ConversationTurn 代表一轮完整的对话（包含主请求，潜在的防循环判定，重试等）
 type ConversationTurn struct {
-	TurnID            int           `json:"turn_id"`
-	StartTime         time.Time     `json:"start_time"`
-	UserMessage       string        `json:"user_message"`
-	SystemModified    bool          `json:"system_modified"`
-	ExtraInjected     bool          `json:"extra_injected"`
-	Events            []*TraceEvent `json:"events"`
-	AssistantResponse string        `json:"assistant_response"`
-	ReasoningContent  string        `json:"reasoning_content"`
-	ToolCalls         []string      `json:"tool_calls"`
-	ChatHistory       []ChatMessage `json:"chat_history,omitempty"` // 新增：保存清洗后的整条请求交互历史
+	TurnID               int           `json:"turn_id"`
+	StartTime            time.Time     `json:"start_time"`
+	UserMessage          string        `json:"user_message"`
+	SystemModified       bool          `json:"system_modified"`
+	ExtraInjected        bool          `json:"extra_injected"`
+	Events               []*TraceEvent `json:"events"`
+	AssistantResponse    string        `json:"assistant_response"`
+	AssistantResponseRef *ContentRef   `json:"assistant_response_ref,omitempty"`
+	ReasoningContent     string        `json:"reasoning_content"`
+	ReasoningContentRef  *ContentRef   `json:"reasoning_content_ref,omitempty"`
+	ToolCalls            []string      `json:"tool_calls"`
+	ToolCallRefs         []ContentRef  `json:"tool_call_refs,omitempty"`
+	ChatHistory          []ChatMessage `json:"chat_history,omitempty"` // 新增：保存清洗后的整条请求交互历史
 }
 
 // ConversationSession 代表会话维度的会话对象
 type ConversationSession struct {
-	ID              string                    `json:"id"`
-	StartTime       time.Time                 `json:"start_time"`
-	EndTime         time.Time                 `json:"end_time"`
-	RequestCount    int                       `json:"request_count"`
-	Models          []string                  `json:"models"`
-	PromptTokens    int                       `json:"prompt_tokens"`
+	ID               string                    `json:"id"`
+	StartTime        time.Time                 `json:"start_time"`
+	EndTime          time.Time                 `json:"end_time"`
+	RequestCount     int                       `json:"request_count"`
+	Models           []string                  `json:"models"`
+	PromptTokens     int                       `json:"prompt_tokens"`
 	CompletionTokens int                       `json:"completion_tokens"`
-	TotalTokens     int                       `json:"total_tokens"`
-	CacheHitTokens  int                       `json:"cache_hit_tokens"`
-	CacheMissTokens int                       `json:"cache_miss_tokens"`
-	Turns           map[int]*ConversationTurn `json:"turns"`
-	Errors          int                       `json:"errors"`
-	Retries         int                       `json:"retries"`
-	GroupingReason  string                    `json:"grouping_reason"`
+	TotalTokens      int                       `json:"total_tokens"`
+	CacheHitTokens   int                       `json:"cache_hit_tokens"`
+	CacheMissTokens  int                       `json:"cache_miss_tokens"`
+	Turns            map[int]*ConversationTurn `json:"turns"`
+	Errors           int                       `json:"errors"`
+	Retries          int                       `json:"retries"`
+	GroupingReason   string                    `json:"grouping_reason"`
 }
 
 // SessionSummary 返回给 UI 的紧凑结构
@@ -125,14 +160,37 @@ type SessionSummary struct {
 	Status           int       `json:"status"`
 }
 
+type TimelineItem struct {
+	Type       string      `json:"type"`
+	SessionID  string      `json:"session_id"`
+	TurnID     int         `json:"turn_id"`
+	Role       string      `json:"role,omitempty"`
+	Phase      string      `json:"phase,omitempty"`
+	LogID      int64       `json:"log_id,omitempty"`
+	Time       time.Time   `json:"time"`
+	Preview    string      `json:"preview,omitempty"`
+	ContentRef *ContentRef `json:"content_ref,omitempty"`
+	MessageIdx int         `json:"message_idx,omitempty"`
+	Event      *TraceEvent `json:"event,omitempty"`
+}
+
+type TimelinePage struct {
+	Items  []TimelineItem `json:"items"`
+	Total  int            `json:"total"`
+	Offset int            `json:"offset"`
+	Limit  int            `json:"limit"`
+}
+
 // AnalysisService 核心分析服务
 type AnalysisService struct {
-	config     *SafeConfig
-	lock       sync.RWMutex
-	sessions   map[string]*ConversationSession
-	eventChan  chan *TraceEvent
-	logDir     string
-	shutdownCh chan struct{}
+	config         *SafeConfig
+	lock           sync.RWMutex
+	sessions       map[string]*ConversationSession
+	eventChan      chan *TraceEvent
+	logDir         string
+	shutdownCh     chan struct{}
+	writtenHashes  map[string]bool // 今日已写盘的哈希表
+	currentLogDate string          // 当前日志文件名对应的日期 2006-01-02
 }
 
 var (
@@ -147,11 +205,13 @@ func InitAnalysisService(cfg *SafeConfig) *AnalysisService {
 		logDir := filepath.Join(filepath.Dir(exe), "analysis_logs")
 
 		globalAnalysisService = &AnalysisService{
-			config:     cfg,
-			sessions:   make(map[string]*ConversationSession),
-			eventChan:  make(chan *TraceEvent, 2000), // 异步事件缓冲区
-			logDir:     logDir,
-			shutdownCh: make(chan struct{}),
+			config:         cfg,
+			sessions:       make(map[string]*ConversationSession),
+			eventChan:      make(chan *TraceEvent, 2000), // 异步事件缓冲区
+			logDir:         logDir,
+			shutdownCh:     make(chan struct{}),
+			writtenHashes:  make(map[string]bool),
+			currentLogDate: "",
 		}
 
 		if cfg.Get().AnalysisEnabled {
@@ -161,7 +221,7 @@ func InitAnalysisService(cfg *SafeConfig) *AnalysisService {
 			}
 			// 重启时同步从磁盘加载历史日志还原内存会话
 			globalAnalysisService.loadHistoryFromDisk()
-			
+
 			go globalAnalysisService.runWorker()
 			go globalAnalysisService.cleanupOldLogs()
 		}
@@ -181,7 +241,9 @@ func (s *AnalysisService) SubmitEvent(ev *TraceEvent) {
 	}
 	// 仅过滤聊天 completions/messages 相关的路由
 	route := ev.Route
-	if !strings.HasSuffix(route, "/v1/chat/completions") && !strings.HasSuffix(route, "/v1/messages") {
+	if ev.Phase == "primary" &&
+		!strings.Contains(route, "/v1/chat/completions") &&
+		!strings.Contains(route, "/v1/messages") {
 		return
 	}
 	select {
@@ -292,20 +354,20 @@ func (s *AnalysisService) processEvent(ev *TraceEvent) {
 	// 如果 primary 包含 response_body 或者是 retry 阶段的 response_body，我们将其作为 assistant 的回复
 	if ev.Phase == "primary" || ev.Phase == "retry" {
 		if ev.Response.ReasoningContent != "" {
-			turn.ReasoningContent = truncateString(ev.Response.ReasoningContent, 2000)
+			turn.ReasoningContent = ev.Response.ReasoningContent
 		} else if ev.RawResponse != "" {
 			if reasoning := parseAssistantReasoning(ev.RawResponse, ev.Format); reasoning != "" {
-				turn.ReasoningContent = truncateString(reasoning, 2000)
+				turn.ReasoningContent = reasoning
 			}
 		}
 		ev.Response.ReasoningContent = turn.ReasoningContent
 
 		// 优先使用 Response.Content，否则从 RawResponse 提取
 		if ev.Response.Content != "" {
-			turn.AssistantResponse = truncateString(ev.Response.Content, 2000)
+			turn.AssistantResponse = ev.Response.Content
 		} else if ev.RawResponse != "" {
 			if content := parseAssistantContent(ev.RawResponse, ev.Format); content != "" {
-				turn.AssistantResponse = truncateString(content, 2000)
+				turn.AssistantResponse = content
 			}
 		}
 		ev.Response.Content = turn.AssistantResponse
@@ -327,14 +389,20 @@ func (s *AnalysisService) processEvent(ev *TraceEvent) {
 				lastHistoryLen = len(prevHistory)
 			}
 			incremental := extractChatHistory(ev.RawRequest, ev.Format, turn.AssistantResponse, turn.ReasoningContent, turn.ToolCalls, true, lastHistoryLen)
-			turn.ChatHistory = append(prevHistory, incremental...)
+			turn.ChatHistory = incremental
 			ev.ChatHistory = incremental
 		}
 	}
 
-	// 3. 持久化落盘 (如果配置开启)
-	if s.config.Get().AnalysisPersistence {
-		s.writeToDisk(ev)
+	// 3. Analysis 开启即持久化；写盘失败不能影响代理主链路。
+	s.writeToDisk(ev)
+	if ev.Phase == "primary" || ev.Phase == "retry" {
+		turn.AssistantResponse = ev.Response.Content
+		turn.AssistantResponseRef = ev.Response.ContentRef
+		turn.ReasoningContent = ev.Response.ReasoningContent
+		turn.ReasoningContentRef = ev.Response.ReasoningContentRef
+		turn.ToolCalls = ev.Response.ToolCalls
+		turn.ToolCallRefs = ev.Response.ToolCallRefs
 	}
 
 	// 4. 清空内存中庞大的原始数据以释放内存
@@ -365,8 +433,8 @@ func (s *AnalysisService) inferSession(ev *TraceEvent) {
 		if len(currentHistory) >= n && n > 0 {
 			match := true
 			for i := 0; i < n; i++ {
-				if currentHistory[i].Role != sessHistory[i].Role || 
-				   currentHistory[i].Content != sessHistory[i].Content {
+				if currentHistory[i].Role != sessHistory[i].Role ||
+					currentHistory[i].Content != sessHistory[i].Content {
 					match = false
 					break
 				}
@@ -476,11 +544,310 @@ func extractMessageText(msg map[string]interface{}) string {
 	return ""
 }
 
+func getMD5Hash(text string) string {
+	hasher := md5.New()
+	hasher.Write([]byte(text))
+	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+func getSHA256Hash(text string) string {
+	sum := sha256.Sum256([]byte(text))
+	return "sha256_" + hex.EncodeToString(sum[:])
+}
+
+func makePreview(text string, maxRunes int) string {
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return text
+	}
+	return string(runes[:maxRunes]) + "...(preview)"
+}
+
+func (s *AnalysisService) contentPathFor(dateStr, hash string) (string, string) {
+	plainHash := strings.TrimPrefix(hash, "sha256_")
+	prefix := plainHash
+	if len(prefix) > 2 {
+		prefix = prefix[:2]
+	}
+	rel := filepath.Join("content", dateStr, prefix, hash+".json.gz")
+	return rel, filepath.Join(s.logDir, rel)
+}
+
+func (s *AnalysisService) writeContentBlob(kind, text string, ts time.Time) (*ContentRef, error) {
+	if text == "" {
+		return nil, nil
+	}
+
+	hash := getSHA256Hash(kind + "\x00" + text)
+	dateStr := ts.Format("2006-01-02")
+	relPath, absPath := s.contentPathFor(dateStr, hash)
+	if err := os.MkdirAll(filepath.Dir(absPath), 0755); err != nil {
+		return nil, err
+	}
+
+	if info, err := os.Stat(absPath); err == nil {
+		return &ContentRef{
+			Kind:            kind,
+			Hash:            hash,
+			Path:            relPath,
+			SizeBytes:       int64(len([]byte(text))),
+			CompressedBytes: info.Size(),
+			Preview:         makePreview(text, 600),
+		}, nil
+	}
+
+	blob := storedContentBlob{
+		Kind:     kind,
+		Hash:     hash,
+		Encoding: "utf-8",
+		Content:  text,
+	}
+	data, err := json.Marshal(blob)
+	if err != nil {
+		return nil, err
+	}
+
+	f, err := os.OpenFile(absPath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0644)
+	if err != nil {
+		if info, statErr := os.Stat(absPath); statErr == nil {
+			return &ContentRef{
+				Kind:            kind,
+				Hash:            hash,
+				Path:            relPath,
+				SizeBytes:       int64(len([]byte(text))),
+				CompressedBytes: info.Size(),
+				Preview:         makePreview(text, 600),
+			}, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+
+	zw := gzip.NewWriter(f)
+	if _, err := zw.Write(data); err != nil {
+		zw.Close()
+		return nil, err
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+
+	info, err := os.Stat(absPath)
+	if err != nil {
+		return nil, err
+	}
+	return &ContentRef{
+		Kind:            kind,
+		Hash:            hash,
+		Path:            relPath,
+		SizeBytes:       int64(len([]byte(text))),
+		CompressedBytes: info.Size(),
+		Preview:         makePreview(text, 600),
+	}, nil
+}
+
+func (s *AnalysisService) readContentRef(ref *ContentRef) (string, error) {
+	if ref == nil {
+		return "", fmt.Errorf("empty content ref")
+	}
+	cleanRel := filepath.Clean(ref.Path)
+	if filepath.IsAbs(cleanRel) || strings.HasPrefix(cleanRel, "..") {
+		return "", fmt.Errorf("invalid content path")
+	}
+	absPath := filepath.Join(s.logDir, cleanRel)
+	f, err := os.Open(absPath)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	zr, err := gzip.NewReader(f)
+	if err != nil {
+		return "", err
+	}
+	defer zr.Close()
+
+	data, err := io.ReadAll(zr)
+	if err != nil {
+		return "", err
+	}
+	var blob storedContentBlob
+	if err := json.Unmarshal(data, &blob); err != nil {
+		return "", err
+	}
+	if blob.Hash != ref.Hash || blob.Kind != ref.Kind {
+		return "", fmt.Errorf("content ref hash or kind mismatch")
+	}
+	return blob.Content, nil
+}
+
+func (s *AnalysisService) removeInsideLogDir(rel string) error {
+	base, err := filepath.Abs(s.logDir)
+	if err != nil {
+		return err
+	}
+	target, err := filepath.Abs(filepath.Join(s.logDir, rel))
+	if err != nil {
+		return err
+	}
+	if target != base && !strings.HasPrefix(target, base+string(os.PathSeparator)) {
+		return fmt.Errorf("refusing to remove path outside analysis log dir")
+	}
+	return os.RemoveAll(target)
+}
+
+func (s *AnalysisService) materializeRefs(ev *TraceEvent) {
+	if ev.RawRequest == "" && ev.RawRequestRef != nil {
+		if text, err := s.readContentRef(ev.RawRequestRef); err == nil {
+			ev.RawRequest = text
+		}
+	}
+	if ev.UpstreamRequest == "" && ev.UpstreamRequestRef != nil {
+		if text, err := s.readContentRef(ev.UpstreamRequestRef); err == nil {
+			ev.UpstreamRequest = text
+		}
+	}
+	if ev.RawResponse == "" && ev.RawResponseRef != nil {
+		if text, err := s.readContentRef(ev.RawResponseRef); err == nil {
+			ev.RawResponse = text
+		}
+	}
+	if ev.Response.Content == "" && ev.Response.ContentRef != nil {
+		if text, err := s.readContentRef(ev.Response.ContentRef); err == nil {
+			ev.Response.Content = text
+		}
+	}
+	if ev.Response.ReasoningContent == "" && ev.Response.ReasoningContentRef != nil {
+		if text, err := s.readContentRef(ev.Response.ReasoningContentRef); err == nil {
+			ev.Response.ReasoningContent = text
+		}
+	}
+	if len(ev.Response.ToolCalls) == 0 && len(ev.Response.ToolCallRefs) > 0 {
+		for i := range ev.Response.ToolCallRefs {
+			ref := &ev.Response.ToolCallRefs[i]
+			if text, err := s.readContentRef(ref); err == nil {
+				ev.Response.ToolCalls = append(ev.Response.ToolCalls, text)
+			}
+		}
+	}
+	for i := range ev.ChatHistory {
+		if ev.ChatHistory[i].Content == "" && ev.ChatHistory[i].ContentRef != nil {
+			if text, err := s.readContentRef(ev.ChatHistory[i].ContentRef); err == nil {
+				ev.ChatHistory[i].Content = text
+			}
+		}
+		if ev.ChatHistory[i].ReasoningContent == "" && ev.ChatHistory[i].ReasoningContentRef != nil {
+			if text, err := s.readContentRef(ev.ChatHistory[i].ReasoningContentRef); err == nil {
+				ev.ChatHistory[i].ReasoningContent = text
+			}
+		}
+		if len(ev.ChatHistory[i].ToolCalls) == 0 && len(ev.ChatHistory[i].ToolCallRefs) > 0 {
+			for j := range ev.ChatHistory[i].ToolCallRefs {
+				ref := &ev.ChatHistory[i].ToolCallRefs[j]
+				if text, err := s.readContentRef(ref); err == nil {
+					ev.ChatHistory[i].ToolCalls = append(ev.ChatHistory[i].ToolCalls, text)
+				}
+			}
+		}
+	}
+}
+
 func (s *AnalysisService) writeToDisk(ev *TraceEvent) {
-	// 无论配置如何，写盘时都强制抹除体积庞大的 RawRequest 与 RawResponse，以防日志空间爆炸
 	evCopy := *ev
-	evCopy.RawRequest = ""
-	evCopy.RawResponse = ""
+	evCopy.StorageError = ""
+
+	attach := func(kind, text string) *ContentRef {
+		ref, err := s.writeContentBlob(kind, text, ev.Time)
+		if err != nil {
+			if evCopy.StorageError == "" {
+				evCopy.StorageError = err.Error()
+			} else {
+				evCopy.StorageError += "; " + err.Error()
+			}
+			return nil
+		}
+		return ref
+	}
+
+	if ev.RawRequest != "" {
+		evCopy.RawRequestRef = attach("raw_client_request", ev.RawRequest)
+		evCopy.RawRequest = ""
+	}
+	if ev.UpstreamRequest != "" {
+		evCopy.UpstreamRequestRef = attach("raw_upstream_request", ev.UpstreamRequest)
+		evCopy.UpstreamRequest = ""
+	}
+	if ev.RawResponse != "" {
+		evCopy.RawResponseRef = attach("raw_response", ev.RawResponse)
+		evCopy.RawResponse = ""
+	}
+	if ev.Response.Content != "" {
+		if ref := attach("response_content", ev.Response.Content); ref != nil {
+			evCopy.Response.ContentRef = ref
+			evCopy.Response.Content = ref.Preview
+			ev.Response.ContentRef = ref
+			ev.Response.Content = ref.Preview
+		}
+	}
+	if ev.Response.ReasoningContent != "" {
+		if ref := attach("reasoning_content", ev.Response.ReasoningContent); ref != nil {
+			evCopy.Response.ReasoningContentRef = ref
+			evCopy.Response.ReasoningContent = ref.Preview
+			ev.Response.ReasoningContentRef = ref
+			ev.Response.ReasoningContent = ref.Preview
+		}
+	}
+	if len(ev.Response.ToolCalls) > 0 {
+		for _, tc := range ev.Response.ToolCalls {
+			if ref := attach("tool_calls", tc); ref != nil {
+				evCopy.Response.ToolCallRefs = append(evCopy.Response.ToolCallRefs, *ref)
+				ev.Response.ToolCallRefs = append(ev.Response.ToolCallRefs, *ref)
+			}
+		}
+		if len(evCopy.Response.ToolCallRefs) > 0 {
+			evCopy.Response.ToolCalls = nil
+			ev.Response.ToolCalls = nil
+		}
+	}
+
+	if len(ev.ChatHistory) > 0 {
+		historyCopy := make([]ChatMessage, len(ev.ChatHistory))
+		copy(historyCopy, ev.ChatHistory)
+		evCopy.ChatHistory = historyCopy
+
+		for i := range evCopy.ChatHistory {
+			msg := &evCopy.ChatHistory[i]
+			origMsg := &ev.ChatHistory[i]
+			if msg.Content != "" {
+				if ref := attach("chat_message_content", msg.Content); ref != nil {
+					msg.ContentRef = ref
+					msg.Content = ref.Preview
+					origMsg.ContentRef = ref
+					origMsg.Content = ref.Preview
+				}
+			}
+			if msg.ReasoningContent != "" {
+				if ref := attach("reasoning_content", msg.ReasoningContent); ref != nil {
+					msg.ReasoningContentRef = ref
+					msg.ReasoningContent = ref.Preview
+					origMsg.ReasoningContentRef = ref
+					origMsg.ReasoningContent = ref.Preview
+				}
+			}
+			if len(msg.ToolCalls) > 0 {
+				for _, tc := range msg.ToolCalls {
+					if ref := attach("tool_calls", tc); ref != nil {
+						msg.ToolCallRefs = append(msg.ToolCallRefs, *ref)
+						origMsg.ToolCallRefs = append(origMsg.ToolCallRefs, *ref)
+					}
+				}
+				if len(msg.ToolCallRefs) > 0 {
+					msg.ToolCalls = nil
+					origMsg.ToolCalls = nil
+				}
+			}
+		}
+	}
 
 	line, err := json.Marshal(evCopy)
 	if err != nil {
@@ -528,6 +895,10 @@ func (s *AnalysisService) cleanupOldLogs() {
 			if info.ModTime().Before(cutoff) {
 				path := filepath.Join(s.logDir, file.Name())
 				os.Remove(path)
+				dateStr := strings.TrimSuffix(file.Name(), ".jsonl")
+				if err := s.removeInsideLogDir(filepath.Join("content", dateStr)); err != nil {
+					log.Printf("[analysis] failed to clean content dir for %s: %v", file.Name(), err)
+				}
 				log.Printf("[analysis] cleaned up expired log file: %s", file.Name())
 			}
 		}
@@ -586,6 +957,9 @@ func (s *AnalysisService) loadHistoryFromDisk() {
 		}
 
 		lines := strings.Split(string(data), "\n")
+		localDict := make(map[string]string)
+		logDate := strings.TrimSuffix(fileName, ".jsonl")
+
 		for _, line := range lines {
 			line = strings.TrimSpace(line)
 			if line == "" {
@@ -601,13 +975,39 @@ func (s *AnalysisService) loadHistoryFromDisk() {
 				continue
 			}
 
+			// 还原哈希字典引用
+			if len(ev.ChatHistory) > 0 {
+				for i := range ev.ChatHistory {
+					msg := &ev.ChatHistory[i]
+					if msg.Role == "system" {
+						if strings.HasPrefix(msg.Content, "$ref_dict:md5_") {
+							hash := strings.TrimPrefix(msg.Content, "$ref_dict:md5_")
+							if original, ok := localDict[hash]; ok {
+								msg.Content = original
+							}
+						} else if len(msg.Content) > 500 {
+							hash := getMD5Hash(msg.Content)
+							localDict[hash] = msg.Content
+
+							// 若是今日日志，则同步到 writtenHashes 维持重启一致性
+							todayStr := time.Now().Format("2006-01-02")
+							if logDate == todayStr {
+								if s.writtenHashes == nil {
+									s.writtenHashes = make(map[string]bool)
+								}
+								s.writtenHashes[hash] = true
+								s.currentLogDate = todayStr
+							}
+						}
+					}
+				}
+			}
+
 			s.reconstructEventInMemory(&ev)
 		}
 	}
 	log.Printf("[analysis] loaded history from disk: %d sessions active", len(s.sessions))
 }
-
-
 
 func (s *AnalysisService) reconstructEventInMemory(ev *TraceEvent) {
 	sess, exists := s.sessions[ev.SessionID]
@@ -677,20 +1077,27 @@ func (s *AnalysisService) reconstructEventInMemory(ev *TraceEvent) {
 		if ev.Response.ReasoningContent != "" {
 			turn.ReasoningContent = ev.Response.ReasoningContent
 		}
+		if ev.Response.ReasoningContentRef != nil {
+			turn.ReasoningContentRef = ev.Response.ReasoningContentRef
+		}
 		if ev.Response.Content != "" {
 			turn.AssistantResponse = ev.Response.Content
+		}
+		if ev.Response.ContentRef != nil {
+			turn.AssistantResponseRef = ev.Response.ContentRef
 		}
 		if len(ev.Response.ToolCalls) > 0 {
 			turn.ToolCalls = ev.Response.ToolCalls
 		}
+		if len(ev.Response.ToolCallRefs) > 0 {
+			turn.ToolCallRefs = ev.Response.ToolCallRefs
+		}
 		if len(ev.ChatHistory) > 0 {
 			var prevHistory []ChatMessage
 			if ev.TurnID > 1 {
-				if prevTurn, ok := sess.Turns[ev.TurnID-1]; ok {
-					prevHistory = prevTurn.ChatHistory
-				}
+				prevHistory = sess.getFullChatHistoryBefore(ev.TurnID)
 			}
-			turn.ChatHistory = append(prevHistory, ev.ChatHistory...)
+			turn.ChatHistory = stripHistoryPrefix(ev.ChatHistory, prevHistory)
 		}
 	}
 
@@ -731,6 +1138,9 @@ func (s *AnalysisService) ClearHistory() error {
 				log.Printf("[analysis] failed to delete log file %s: %v", file.Name(), err)
 			}
 		}
+	}
+	if err := s.removeInsideLogDir("content"); err != nil && !os.IsNotExist(err) {
+		log.Printf("[analysis] failed to delete content directory: %v", err)
 	}
 
 	s.sessions = make(map[string]*ConversationSession)
@@ -786,7 +1196,7 @@ func (s *AnalysisService) AssignSessionAndTurn(startTime time.Time, rawRequest s
 	// 提取当前轮次的 UserMessage 写入占位的 Turn 中
 	userMsg := getLastUserMessage(tempEv)
 	if userMsg != "" && turn.UserMessage == "" {
-		turn.UserMessage = truncateString(userMsg, 1000)
+		turn.UserMessage = userMsg
 	}
 
 	return tempEv.SessionID, tempEv.TurnID
@@ -1082,7 +1492,6 @@ func formatCacheRatio(hit, miss int) string {
 	return fmt.Sprintf("%.1f%%", pct)
 }
 
-
 // GetSessionSummaries 获取会话列表摘要，以 StartTime 倒序排序
 func (s *AnalysisService) GetSessionSummaries(limit, offset int) []SessionSummary {
 	s.lock.RLock()
@@ -1180,6 +1589,87 @@ func (s *AnalysisService) GetSessionDetails(id string) *ConversationSession {
 	return s.sessions[id]
 }
 
+func (s *AnalysisService) GetTimelinePage(id string, offset, limit int) (TimelinePage, error) {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
+	sess, exists := s.sessions[id]
+	if !exists {
+		return TimelinePage{}, fmt.Errorf("session %s not found", id)
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	var keys []int
+	for k := range sess.Turns {
+		keys = append(keys, k)
+	}
+	sort.Ints(keys)
+
+	var items []TimelineItem
+	for _, k := range keys {
+		turn := sess.Turns[k]
+		for idx, msg := range turn.ChatHistory {
+			ref := msg.ContentRef
+			preview := msg.Content
+			if preview == "" && ref != nil {
+				preview = ref.Preview
+			}
+			if preview == "" && msg.ReasoningContent != "" {
+				preview = msg.ReasoningContent
+				ref = msg.ReasoningContentRef
+			}
+			if preview == "" && len(msg.ToolCalls) > 0 {
+				preview = strings.Join(msg.ToolCalls, "\n")
+			}
+			items = append(items, TimelineItem{
+				Type:       "message",
+				SessionID:  id,
+				TurnID:     turn.TurnID,
+				Role:       msg.Role,
+				Time:       turn.StartTime,
+				Preview:    makePreview(preview, 600),
+				ContentRef: ref,
+				MessageIdx: idx,
+			})
+		}
+		for _, ev := range turn.Events {
+			if ev.Phase == "analyzer" || ev.Phase == "retry" {
+				items = append(items, TimelineItem{
+					Type:      "event",
+					SessionID: id,
+					TurnID:    turn.TurnID,
+					Phase:     ev.Phase,
+					LogID:     ev.LogID,
+					Time:      ev.Time,
+					Preview:   ev.Response.AnalyzerJudgment,
+					Event:     ev,
+				})
+			}
+		}
+	}
+
+	total := len(items)
+	if offset >= total {
+		return TimelinePage{Items: []TimelineItem{}, Total: total, Offset: offset, Limit: limit}, nil
+	}
+	end := offset + limit
+	if end > total {
+		end = total
+	}
+	return TimelinePage{Items: items[offset:end], Total: total, Offset: offset, Limit: limit}, nil
+}
+
+func (s *AnalysisService) ResolveContent(ref ContentRef) (string, error) {
+	return s.readContentRef(&ref)
+}
+
 // ExportMarkdown 导出特定 Session 的 Markdown 报告
 func (s *AnalysisService) ExportMarkdown(id string) (string, error) {
 	s.lock.RLock()
@@ -1246,8 +1736,14 @@ func (s *AnalysisService) ExportMarkdown(id string) (string, error) {
 		}
 
 		if turn.ReasoningContent != "" {
+			reasoningText := turn.ReasoningContent
+			if turn.ReasoningContentRef != nil {
+				if full, err := s.readContentRef(turn.ReasoningContentRef); err == nil {
+					reasoningText = full
+				}
+			}
 			sb.WriteString("<details>\n<summary>🧠 <b>模型深度思考过程</b></summary>\n\n")
-			sb.WriteString("```\n" + turn.ReasoningContent + "\n```\n")
+			sb.WriteString("```\n" + reasoningText + "\n```\n")
 			sb.WriteString("</details>\n\n")
 		}
 
@@ -1260,7 +1756,13 @@ func (s *AnalysisService) ExportMarkdown(id string) (string, error) {
 		}
 
 		if turn.AssistantResponse != "" {
-			sb.WriteString(fmt.Sprintf("**🤖 模型回复**:\n\n%s\n\n", turn.AssistantResponse))
+			responseText := turn.AssistantResponse
+			if turn.AssistantResponseRef != nil {
+				if full, err := s.readContentRef(turn.AssistantResponseRef); err == nil {
+					responseText = full
+				}
+			}
+			sb.WriteString(fmt.Sprintf("**🤖 模型回复**:\n\n%s\n\n", responseText))
 		}
 
 		sb.WriteString("---\n\n")
@@ -1353,7 +1855,6 @@ func buildRequestMeta(data map[string]interface{}, format string, transformed, e
 			}
 		}
 	}
-	meta.LastUserSummary = truncateString(meta.LastUserSummary, 1000)
 	return meta
 }
 
@@ -1454,8 +1955,8 @@ func extractChatHistory(rawRequest string, format string, finalReply string, fin
 
 		history = append(history, ChatMessage{
 			Role:             role,
-			Content:          truncateString(content, 1000),
-			ReasoningContent: truncateString(reasoning, 1000),
+			Content:          content,
+			ReasoningContent: reasoning,
 			ToolCalls:        toolCalls,
 		})
 	}
@@ -1463,8 +1964,8 @@ func extractChatHistory(rawRequest string, format string, finalReply string, fin
 	if finalReply != "" || finalReasoning != "" || len(finalTools) > 0 {
 		history = append(history, ChatMessage{
 			Role:             "assistant",
-			Content:          truncateString(finalReply, 1000),
-			ReasoningContent: truncateString(finalReasoning, 1000),
+			Content:          finalReply,
+			ReasoningContent: finalReasoning,
 			ToolCalls:        finalTools,
 		})
 	}
@@ -1557,15 +2058,35 @@ func truncateString(s string, maxLen int) string {
 }
 
 func (sess *ConversationSession) getFullChatHistory() []ChatMessage {
+	return sess.getFullChatHistoryBefore(1<<31 - 1)
+}
+
+func (sess *ConversationSession) getFullChatHistoryBefore(turnID int) []ChatMessage {
 	if len(sess.Turns) == 0 {
 		return nil
 	}
-	maxTurnID := 0
+	var keys []int
 	for k := range sess.Turns {
-		if k > maxTurnID {
-			maxTurnID = k
+		if k < turnID {
+			keys = append(keys, k)
 		}
 	}
-	return sess.Turns[maxTurnID].ChatHistory
+	sort.Ints(keys)
+	var history []ChatMessage
+	for _, k := range keys {
+		history = append(history, sess.Turns[k].ChatHistory...)
+	}
+	return history
 }
 
+func stripHistoryPrefix(history, prefix []ChatMessage) []ChatMessage {
+	if len(prefix) == 0 || len(history) < len(prefix) {
+		return history
+	}
+	for i := range prefix {
+		if history[i].Role != prefix[i].Role || history[i].Content != prefix[i].Content {
+			return history
+		}
+	}
+	return history[len(prefix):]
+}

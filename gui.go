@@ -79,6 +79,10 @@ func handleGUI(w http.ResponseWriter, r *http.Request, l *Logger, cfg *SafeConfi
 		handleAPIClearAnalysisHistory(w, r, svc)
 	case strings.HasPrefix(path, "/analysis/sessions/") && strings.HasSuffix(path, "/export.md"):
 		handleAPIAnalysisExport(w, r, path, svc)
+	case strings.HasPrefix(path, "/analysis/sessions/") && strings.HasSuffix(path, "/timeline"):
+		handleAPIAnalysisTimeline(w, r, path, svc)
+	case strings.HasPrefix(path, "/analysis/sessions/") && strings.HasSuffix(path, "/content"):
+		handleAPIAnalysisContent(w, r, path, svc)
 	case strings.HasPrefix(path, "/analysis/sessions/"):
 		handleAPIAnalysisSessionDetail(w, r, path, svc)
 	case path == "/logs" && r.Method == "DELETE":
@@ -234,9 +238,19 @@ func handleAPISaveConfig(w http.ResponseWriter, r *http.Request, cfg *SafeConfig
 		changed = setBoolField(updates, "anti_loop_enabled", &c.AntiLoopEnabled) || changed
 		changed = setBoolField(updates, "debug_mode", &c.DebugMode) || changed
 		changed = setBoolField(updates, "auto_reasoning_content", &c.AutoReasoningContent) || changed
+		changed = setBoolField(updates, "analysis_enabled", &c.AnalysisEnabled) || changed
 		changed = setBoolField(updates, "lan_access", &c.LANAccess) || changed
 		changed = setIntField(updates, "max_tokens_custom", &c.MaxTokensCustom, 0) || changed
 		changed = setIntField(updates, "antiloop_check_tokens", &c.AntiLoopCheckTokens, 0) || changed
+		changed = setIntField(updates, "analysis_retention_days", &c.AnalysisRetentionDays, 1) || changed
+		if c.AnalysisPersistence != c.AnalysisEnabled {
+			c.AnalysisPersistence = c.AnalysisEnabled
+			changed = true
+		}
+		if c.AnalysisPersistRawBodies != c.AnalysisEnabled {
+			c.AnalysisPersistRawBodies = c.AnalysisEnabled
+			changed = true
+		}
 
 		if changed {
 			if err = SaveConfig(*c); err != nil {
@@ -380,6 +394,57 @@ func handleAPIAnalysisSessionDetail(w http.ResponseWriter, r *http.Request, path
 	}
 
 	json.NewEncoder(w).Encode(sess)
+}
+
+func handleAPIAnalysisTimeline(w http.ResponseWriter, r *http.Request, path string, svc *AnalysisService) {
+	id := strings.TrimPrefix(path, "/analysis/sessions/")
+	id = strings.TrimSuffix(id, "/timeline")
+	if svc == nil {
+		http.Error(w, `{"error":"analysis service not initialized"}`, http.StatusInternalServerError)
+		return
+	}
+
+	limit := 100
+	offset := 0
+	if v, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && v > 0 {
+		limit = v
+	}
+	if v, err := strconv.Atoi(r.URL.Query().Get("offset")); err == nil && v >= 0 {
+		offset = v
+	}
+
+	page, err := svc.GetTimelinePage(id, offset, limit)
+	if err != nil {
+		http.Error(w, `{"error":"session not found"}`, http.StatusNotFound)
+		return
+	}
+	json.NewEncoder(w).Encode(page)
+}
+
+func handleAPIAnalysisContent(w http.ResponseWriter, r *http.Request, path string, svc *AnalysisService) {
+	id := strings.TrimPrefix(path, "/analysis/sessions/")
+	id = strings.TrimSuffix(id, "/content")
+	_ = id
+	if svc == nil {
+		http.Error(w, `{"error":"analysis service not initialized"}`, http.StatusInternalServerError)
+		return
+	}
+
+	ref := ContentRef{
+		Kind: r.URL.Query().Get("kind"),
+		Hash: r.URL.Query().Get("hash"),
+		Path: r.URL.Query().Get("path"),
+	}
+	if ref.Kind == "" || ref.Hash == "" || ref.Path == "" {
+		http.Error(w, `{"error":"missing content ref"}`, http.StatusBadRequest)
+		return
+	}
+	text, err := svc.ResolveContent(ref)
+	if err != nil {
+		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusNotFound)
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]string{"content": text})
 }
 
 func handleAPIAnalysisExport(w http.ResponseWriter, r *http.Request, path string, svc *AnalysisService) {

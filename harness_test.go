@@ -279,7 +279,7 @@ func (h *mockUpstreamHandler) handleAnthropic(w http.ResponseWriter, req map[str
 	}
 
 	lastMsg := messages[len(messages)-1].(map[string]interface{})
-	
+
 	// 判断 Anthropic 轮次
 	round := 1
 	cArr, ok := lastMsg["content"].([]interface{})
@@ -376,9 +376,9 @@ func (h *mockUpstreamHandler) handleAnthropic(w http.ResponseWriter, req map[str
 				"type":  "content_block_start",
 				"index": idx,
 				"content_block": map[string]interface{}{
-					"type": "tool_use",
-					"id":   toolUse["id"],
-					"name": toolUse["name"],
+					"type":  "tool_use",
+					"id":    toolUse["id"],
+					"name":  toolUse["name"],
 					"input": map[string]interface{}{},
 				},
 			}
@@ -432,11 +432,11 @@ func (h *mockUpstreamHandler) handleAnthropic(w http.ResponseWriter, req map[str
 			content = append(content, toolUse)
 		}
 		resp := map[string]interface{}{
-			"id":      "msg_mock",
-			"type":    "message",
-			"role":    "assistant",
-			"content": content,
-			"model":   "deepseek-v4-pro",
+			"id":          "msg_mock",
+			"type":        "message",
+			"role":        "assistant",
+			"content":     content,
+			"model":       "deepseek-v4-pro",
 			"stop_reason": condStr(toolUse != nil, "tool_use", "end_turn"),
 		}
 		json.NewEncoder(w).Encode(resp)
@@ -493,7 +493,7 @@ func runAutoToolHarness(t *testing.T, isStream bool, isAnthropic bool) {
 
 	logger := NewLogger(100)
 	proxy := NewProxyServer(safeTestConfig, logger, svc)
-	
+
 	gatewayServer := &http.Server{
 		Addr:    "127.0.0.1:8188",
 		Handler: proxy,
@@ -668,8 +668,8 @@ func runAutoToolHarness(t *testing.T, isStream bool, isAnthropic bool) {
 							var argsMap map[string]interface{}
 							json.Unmarshal([]byte(fn["arguments"].(string)), &argsMap)
 							finalToolCalls = append(finalToolCalls, map[string]interface{}{
-								"id":   tc["id"],
-								"name": fn["name"],
+								"id":    tc["id"],
+								"name":  fn["name"],
 								"input": argsMap,
 							})
 						}
@@ -729,9 +729,9 @@ func runAutoToolHarness(t *testing.T, isStream bool, isAnthropic bool) {
 					"role": "user",
 					"content": []interface{}{
 						map[string]interface{}{
-							"type":         "tool_result",
-							"tool_use_id":  tcId,
-							"content":      result,
+							"type":        "tool_result",
+							"tool_use_id": tcId,
+							"content":     result,
 						},
 					},
 				})
@@ -781,44 +781,13 @@ func runAutoToolHarness(t *testing.T, isStream bool, isAnthropic bool) {
 
 	// 5. 验证是否生成了正确的 sessions 数据 (直接从内存中读取)
 	svc.lock.RLock()
-	var details []interface{}
-	for _, sess := range svc.sessions {
-		details = append(details, sess)
-	}
-	svc.lock.RUnlock()
-
-	data, err := json.Marshal(details)
-	if err != nil {
-		t.Fatalf("failed to marshal sessions: %v", err)
-	}
-
-	var activeSessions []map[string]interface{}
-	if err := json.Unmarshal(data, &activeSessions); err != nil {
-		t.Fatalf("failed to unmarshal sessions: %v", err)
-	}
-
-	// 找到 chat_history 长度最长的那个 session，因为它代表最后一轮包含最完整历史的请求
-	var maxHistSess map[string]interface{}
 	maxHistLen := 0
-
-	for _, sVal := range activeSessions {
-		turns, _ := sVal["turns"].(map[string]interface{})
-		for _, tVal := range turns {
-			turnMap, ok := tVal.(map[string]interface{})
-			if !ok {
-				continue
-			}
-			chatHist, _ := turnMap["chat_history"].([]interface{})
-			if len(chatHist) > maxHistLen {
-				maxHistLen = len(chatHist)
-				maxHistSess = sVal
-			}
+	for _, sess := range svc.sessions {
+		if n := len(sess.getFullChatHistory()); n > maxHistLen {
+			maxHistLen = n
 		}
 	}
-
-	if maxHistSess == nil {
-		t.Fatalf("no session with chat history found in memory")
-	}
+	svc.lock.RUnlock()
 
 	t.Logf("found max chat_history length: %d", maxHistLen)
 

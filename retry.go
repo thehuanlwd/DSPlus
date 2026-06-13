@@ -16,8 +16,8 @@ import (
 // AntiLoopAnalysis is the result returned by the sub-agent analyzer.
 type AntiLoopAnalysis struct {
 	Judgment       string `json:"judgment"`        // "loop" | "excessive" | "normal"
-	Guidance       string `json:"guidance"`         // guidance text injected into retry
-	EnableThinking bool   `json:"enable_thinking"`  // whether retry should enable thinking
+	Guidance       string `json:"guidance"`        // guidance text injected into retry
+	EnableThinking bool   `json:"enable_thinking"` // whether retry should enable thinking
 }
 
 // ── Tuning constants ─────────────────────────────────────────────────────────
@@ -121,10 +121,10 @@ func hardLimitMessages(format string) []byte {
 
 	// Anthropic format
 	resp := map[string]interface{}{
-		"id":         "dsplus-antiloop",
-		"type":       "message",
-		"role":       "assistant",
-		"model":      "deepseek-chat",
+		"id":          "dsplus-antiloop",
+		"type":        "message",
+		"role":        "assistant",
+		"model":       "deepseek-chat",
 		"stop_reason": "end_turn",
 		"content": []map[string]interface{}{
 			{
@@ -268,14 +268,14 @@ func (s *ProxyServer) executeAndStreamRetry(
 	if err != nil {
 		log.Printf("[antiloop] reqID=%d retry call failed: %v", reqID, err)
 		s.logger.Add(LogEntry{
-			Time:        startTime,
-			Format:      format,
-			RequestType: "antiloop_retry",
-			Method:      "POST",
-			Path:        "/chat/completions (防循环重试-stream)",
-			StatusCode:  502,
-			LatencyMs:   time.Since(startTime).Milliseconds(),
-			OriginalBody:    condStr(cfg.VerboseLogging, truncateBody(string(body)), ""),
+			Time:         startTime,
+			Format:       format,
+			RequestType:  "antiloop_retry",
+			Method:       "POST",
+			Path:         "/chat/completions (防循环重试-stream)",
+			StatusCode:   502,
+			LatencyMs:    time.Since(startTime).Milliseconds(),
+			OriginalBody: condStr(cfg.VerboseLogging, truncateBody(string(body)), ""),
 		})
 		return "", nil
 	}
@@ -353,15 +353,15 @@ func (s *ProxyServer) executeAndStreamRetry(
 	traceKeyvals("event", "retry_logging", "status", retryResp.StatusCode,
 		"latency_ms", time.Since(startTime).Milliseconds(), "resp_bytes", respCapture.Len())
 	retryLogID := s.logger.Add(LogEntry{
-		Time:        startTime,
-		Format:      format,
-		RequestType: "antiloop_retry",
-		Method:      "POST",
-		Path:        "/chat/completions (防循环重试-stream)",
-		StatusCode:  retryResp.StatusCode,
-		LatencyMs:   time.Since(startTime).Milliseconds(),
-		OriginalBody:    condStr(cfg.VerboseLogging, truncateBody(string(body)), ""),
-		ResponseBody:    condStr(cfg.VerboseLogging, truncateBody(respCapture.String()), ""),
+		Time:         startTime,
+		Format:       format,
+		RequestType:  "antiloop_retry",
+		Method:       "POST",
+		Path:         "/chat/completions (防循环重试-stream)",
+		StatusCode:   retryResp.StatusCode,
+		LatencyMs:    time.Since(startTime).Milliseconds(),
+		OriginalBody: condStr(cfg.VerboseLogging, truncateBody(string(body)), ""),
+		ResponseBody: condStr(cfg.VerboseLogging, truncateBody(respCapture.String()), ""),
 	})
 	log.Printf("[antiloop] retry logged: id=%d", retryLogID)
 	if lastUsage != nil {
@@ -501,15 +501,15 @@ func (s *ProxyServer) callAntiLoopAnalyzerWith(analysisBody []byte, pathLabel st
 
 	// Log the analyzer call
 	analyzerLogID := s.logger.Add(LogEntry{
-		Time:        startTime,
-		Format:      "openai",
-		RequestType: "antiloop_analyzer",
-		Method:      "POST",
-		Path:        "/chat/completions (" + pathLabel + ")",
-		StatusCode:  resp.StatusCode,
-		LatencyMs:   time.Since(startTime).Milliseconds(),
-		OriginalBody:    condStr(cfg.VerboseLogging, truncateBody(string(analysisBody)), ""),
-		ResponseBody:    condStr(cfg.VerboseLogging, truncateBody(string(respBytes)), ""),
+		Time:         startTime,
+		Format:       "openai",
+		RequestType:  "antiloop_analyzer",
+		Method:       "POST",
+		Path:         "/chat/completions (" + pathLabel + ")",
+		StatusCode:   resp.StatusCode,
+		LatencyMs:    time.Since(startTime).Milliseconds(),
+		OriginalBody: condStr(cfg.VerboseLogging, truncateBody(string(analysisBody)), ""),
+		ResponseBody: condStr(cfg.VerboseLogging, truncateBody(string(respBytes)), ""),
 	})
 
 	// Parse OpenAI response
@@ -559,7 +559,7 @@ func (s *ProxyServer) callAntiLoopAnalyzerWith(analysisBody []byte, pathLabel st
 	analyzerEventID := "ana_" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	var analyzerBody map[string]interface{}
 	json.Unmarshal(analysisBody, &analyzerBody)
-	
+
 	anaEv := NewTraceEvent(
 		startTime,
 		analyzerLogID,
@@ -567,7 +567,7 @@ func (s *ProxyServer) callAntiLoopAnalyzerWith(analysisBody []byte, pathLabel st
 		0,
 		"analyzer",
 		"openai",
-		"/chat/completions (" + pathLabel + ")",
+		"/chat/completions ("+pathLabel+")",
 		resp.StatusCode,
 		time.Since(startTime).Milliseconds(),
 		"deepseek-chat",
@@ -580,6 +580,7 @@ func (s *ProxyServer) callAntiLoopAnalyzerWith(analysisBody []byte, pathLabel st
 		string(analysisBody),
 		string(respBytes),
 	)
+	anaEv.UpstreamRequest = anaEv.RawRequest
 	anaEv.ID = analyzerEventID
 	s.analysisSvc.SubmitEvent(anaEv)
 
@@ -839,14 +840,14 @@ func (s *ProxyServer) executeRetry(body []byte, format string) (responseBody []b
 	if err != nil {
 		log.Printf("[antiloop] retry upstream error: %v", err)
 		s.logger.Add(LogEntry{
-			Time:        startTime,
-			Format:      format,
-			RequestType: "antiloop_retry",
-			Method:      "POST",
-			Path:        path + " (防循环重试)",
-			StatusCode:  502,
-			LatencyMs:   time.Since(startTime).Milliseconds(),
-			OriginalBody:    condStr(cfg.VerboseLogging, truncateBody(string(body)), ""),
+			Time:         startTime,
+			Format:       format,
+			RequestType:  "antiloop_retry",
+			Method:       "POST",
+			Path:         path + " (防循环重试)",
+			StatusCode:   502,
+			LatencyMs:    time.Since(startTime).Milliseconds(),
+			OriginalBody: condStr(cfg.VerboseLogging, truncateBody(string(body)), ""),
 		})
 		return hardLimitMessages(format), "stop"
 	}
@@ -871,15 +872,15 @@ func (s *ProxyServer) executeRetry(body []byte, format string) (responseBody []b
 
 	// ── Log the retry call ──
 	retryLogID := s.logger.Add(LogEntry{
-		Time:        startTime,
-		Format:      format,
-		RequestType: "antiloop_retry",
-		Method:      "POST",
-		Path:        path + " (防循环重试)",
-		StatusCode:  resp.StatusCode,
-		LatencyMs:   time.Since(startTime).Milliseconds(),
-		OriginalBody:    condStr(cfg.VerboseLogging, truncateBody(string(body)), ""),
-		ResponseBody:    condStr(cfg.VerboseLogging, truncateBody(string(respBytes)), ""),
+		Time:         startTime,
+		Format:       format,
+		RequestType:  "antiloop_retry",
+		Method:       "POST",
+		Path:         path + " (防循环重试)",
+		StatusCode:   resp.StatusCode,
+		LatencyMs:    time.Since(startTime).Milliseconds(),
+		OriginalBody: condStr(cfg.VerboseLogging, truncateBody(string(body)), ""),
+		ResponseBody: condStr(cfg.VerboseLogging, truncateBody(string(respBytes)), ""),
 	})
 
 	// Extract and update token usage
