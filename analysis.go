@@ -1,13 +1,10 @@
 package main
 
 import (
-	"compress/gzip"
 	"crypto/md5"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -19,56 +16,39 @@ import (
 )
 
 type ChatMessage struct {
-	Role                string       `json:"role"`
-	Content             string       `json:"content,omitempty"`
-	ContentRef          *ContentRef  `json:"content_ref,omitempty"`
-	ReasoningContent    string       `json:"reasoning_content,omitempty"`
-	ReasoningContentRef *ContentRef  `json:"reasoning_content_ref,omitempty"`
-	ToolCalls           []string     `json:"tool_calls,omitempty"`
-	ToolCallRefs        []ContentRef `json:"tool_call_refs,omitempty"`
+	Role             string   `json:"role"`
+	Content          string   `json:"content,omitempty"`
+	ReasoningContent string   `json:"reasoning_content,omitempty"`
+	ToolCalls        []string `json:"tool_calls,omitempty"`
 }
 
-type ContentRef struct {
-	Kind            string `json:"kind"`
-	Hash            string `json:"hash"`
-	Path            string `json:"path"`
-	SizeBytes       int64  `json:"size_bytes"`
-	CompressedBytes int64  `json:"compressed_bytes,omitempty"`
-	Preview         string `json:"preview,omitempty"`
-}
-
-type storedContentBlob struct {
-	Kind     string `json:"kind"`
-	Hash     string `json:"hash"`
-	Encoding string `json:"encoding"`
-	Content  string `json:"content"`
+type ToolMeta struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
 }
 
 // TraceEvent 代表代理过程中的一次结构化事实事件
 type TraceEvent struct {
-	ID                 string        `json:"id"`
-	ParentID           string        `json:"parent_id,omitempty"` // 用于关联重试或分析子事件
-	Time               time.Time     `json:"time"`
-	LogID              int64         `json:"log_id"`
-	SessionID          string        `json:"session_id"`
-	TurnID             int           `json:"turn_id"`
-	Phase              string        `json:"phase"` // primary, analyzer, retry, debug
-	Format             string        `json:"format"`
-	Route              string        `json:"route"`
-	Status             int           `json:"status"`
-	LatencyMs          int64         `json:"latency_ms"`
-	Model              string        `json:"model"`
-	Upstream           string        `json:"upstream"`
-	Request            RequestMeta   `json:"request"`
-	Response           ResponseMeta  `json:"response"`
-	RawRequest         string        `json:"raw_request,omitempty"` // 详细记录时可用，持久化可选择性丢弃
-	RawRequestRef      *ContentRef   `json:"raw_request_ref,omitempty"`
-	UpstreamRequest    string        `json:"upstream_request,omitempty"`
-	UpstreamRequestRef *ContentRef   `json:"upstream_request_ref,omitempty"`
-	RawResponse        string        `json:"raw_response,omitempty"` // 详细记录时可用，持久化可选择性丢弃
-	RawResponseRef     *ContentRef   `json:"raw_response_ref,omitempty"`
-	ChatHistory        []ChatMessage `json:"chat_history,omitempty"` // 持久化清洗后的聊天历史
-	StorageError       string        `json:"storage_error,omitempty"`
+	ID              string        `json:"id"`
+	ParentID        string        `json:"parent_id,omitempty"` // 用于关联重试或分析子事件
+	Time            time.Time     `json:"time"`
+	LogID           int64         `json:"log_id"`
+	SessionID       string        `json:"session_id"`
+	TurnID          int           `json:"turn_id"`
+	Phase           string        `json:"phase"` // primary, analyzer, retry, debug
+	Format          string        `json:"format"`
+	Route           string        `json:"route"`
+	Status          int           `json:"status"`
+	LatencyMs       int64         `json:"latency_ms"`
+	Model           string        `json:"model"`
+	Upstream        string        `json:"upstream"`
+	Request         RequestMeta   `json:"request"`
+	Response        ResponseMeta  `json:"response"`
+	RawRequest      string        `json:"raw_request,omitempty"` // 详细记录时可用，持久化可选择性丢弃
+	UpstreamRequest string        `json:"upstream_request,omitempty"`
+	RawResponse     string        `json:"raw_response,omitempty"` // 详细记录时可用，持久化可选择性丢弃
+	ChatHistory     []ChatMessage `json:"chat_history,omitempty"` // 持久化清洗后的聊天历史
+	StorageError    string        `json:"storage_error,omitempty"`
 }
 
 // RequestMeta 存储请求关键元数据
@@ -85,43 +65,38 @@ type RequestMeta struct {
 	ExtraPromptInjected     bool           `json:"extra_prompt_injected"`
 	SemanticType            string         `json:"semantic_type,omitempty"`
 	Tools                   []string       `json:"tools,omitempty"`
+	ToolsDetail             []ToolMeta     `json:"tools_detail,omitempty"`
 }
 
 // ResponseMeta 存储响应元数据
 type ResponseMeta struct {
-	FinishReason        string       `json:"finish_reason"`
-	PromptTokens        int          `json:"prompt_tokens"`
-	CompletionTokens    int          `json:"completion_tokens"`
-	TotalTokens         int          `json:"total_tokens"`
-	CacheHitTokens      int          `json:"cache_hit_tokens"`
-	CacheMissTokens     int          `json:"cache_miss_tokens"`
-	ReasoningTokens     int          `json:"reasoning_tokens"`
-	ReasoningContent    string       `json:"reasoning_content"`
-	ReasoningContentRef *ContentRef  `json:"reasoning_content_ref,omitempty"`
-	Content             string       `json:"content,omitempty"`
-	ContentRef          *ContentRef  `json:"content_ref,omitempty"`
-	ToolCalls           []string     `json:"tool_calls,omitempty"`
-	ToolCallRefs        []ContentRef `json:"tool_call_refs,omitempty"`
-	AntiLoopTriggered   bool         `json:"antiloop_triggered"`
-	AnalyzerJudgment    string       `json:"analyzer_judgment"`
-	RetryModel          string       `json:"retry_model"`
+	FinishReason      string   `json:"finish_reason"`
+	PromptTokens      int      `json:"prompt_tokens"`
+	CompletionTokens  int      `json:"completion_tokens"`
+	TotalTokens       int      `json:"total_tokens"`
+	CacheHitTokens    int      `json:"cache_hit_tokens"`
+	CacheMissTokens   int      `json:"cache_miss_tokens"`
+	ReasoningTokens   int      `json:"reasoning_tokens"`
+	ReasoningContent  string   `json:"reasoning_content"`
+	Content           string   `json:"content,omitempty"`
+	ToolCalls         []string `json:"tool_calls,omitempty"`
+	AntiLoopTriggered bool     `json:"antiloop_triggered"`
+	AnalyzerJudgment  string   `json:"analyzer_judgment"`
+	RetryModel        string   `json:"retry_model"`
 }
 
 // ConversationTurn 代表一轮完整的对话（包含主请求，潜在的防循环判定，重试等）
 type ConversationTurn struct {
-	TurnID               int           `json:"turn_id"`
-	StartTime            time.Time     `json:"start_time"`
-	UserMessage          string        `json:"user_message"`
-	SystemModified       bool          `json:"system_modified"`
-	ExtraInjected        bool          `json:"extra_injected"`
-	Events               []*TraceEvent `json:"events"`
-	AssistantResponse    string        `json:"assistant_response"`
-	AssistantResponseRef *ContentRef   `json:"assistant_response_ref,omitempty"`
-	ReasoningContent     string        `json:"reasoning_content"`
-	ReasoningContentRef  *ContentRef   `json:"reasoning_content_ref,omitempty"`
-	ToolCalls            []string      `json:"tool_calls"`
-	ToolCallRefs         []ContentRef  `json:"tool_call_refs,omitempty"`
-	ChatHistory          []ChatMessage `json:"chat_history,omitempty"` // 新增：保存清洗后的整条请求交互历史
+	TurnID            int           `json:"turn_id"`
+	StartTime         time.Time     `json:"start_time"`
+	UserMessage       string        `json:"user_message"`
+	SystemModified    bool          `json:"system_modified"`
+	ExtraInjected     bool          `json:"extra_injected"`
+	Events            []*TraceEvent `json:"events"`
+	AssistantResponse string        `json:"assistant_response"`
+	ReasoningContent  string        `json:"reasoning_content"`
+	ToolCalls         []string      `json:"tool_calls"`
+	ChatHistory       []ChatMessage `json:"chat_history,omitempty"` // 新增：保存清洗后的整条请求交互历史
 }
 
 // ConversationSession 代表会话维度的会话对象
@@ -161,17 +136,18 @@ type SessionSummary struct {
 }
 
 type TimelineItem struct {
-	Type       string      `json:"type"`
-	SessionID  string      `json:"session_id"`
-	TurnID     int         `json:"turn_id"`
-	Role       string      `json:"role,omitempty"`
-	Phase      string      `json:"phase,omitempty"`
-	LogID      int64       `json:"log_id,omitempty"`
-	Time       time.Time   `json:"time"`
-	Preview    string      `json:"preview,omitempty"`
-	ContentRef *ContentRef `json:"content_ref,omitempty"`
-	MessageIdx int         `json:"message_idx,omitempty"`
-	Event      *TraceEvent `json:"event,omitempty"`
+	Type             string      `json:"type"`
+	SessionID        string      `json:"session_id"`
+	TurnID           int         `json:"turn_id"`
+	Role             string      `json:"role,omitempty"`
+	Phase            string      `json:"phase,omitempty"`
+	LogID            int64       `json:"log_id,omitempty"`
+	Time             time.Time   `json:"time"`
+	Preview          string      `json:"preview,omitempty"` // 用于存储完整的内容文本
+	ReasoningContent string      `json:"reasoning_content,omitempty"`
+	MessageIdx       int         `json:"message_idx,omitempty"`
+	Event            *TraceEvent `json:"event,omitempty"`
+	Tools            []ToolMeta  `json:"tools,omitempty"` // 可用工具列表详情
 }
 
 type TimelinePage struct {
@@ -398,16 +374,27 @@ func (s *AnalysisService) processEvent(ev *TraceEvent) {
 	s.writeToDisk(ev)
 	if ev.Phase == "primary" || ev.Phase == "retry" {
 		turn.AssistantResponse = ev.Response.Content
-		turn.AssistantResponseRef = ev.Response.ContentRef
 		turn.ReasoningContent = ev.Response.ReasoningContent
-		turn.ReasoningContentRef = ev.Response.ReasoningContentRef
 		turn.ToolCalls = ev.Response.ToolCalls
-		turn.ToolCallRefs = ev.Response.ToolCallRefs
 	}
 
 	// 4. 清空内存中庞大的原始数据以释放内存
 	ev.RawRequest = ""
 	ev.RawResponse = ""
+}
+
+// filterNonSystemMessages 返回去除 role=="system" 后的消息切片，用于会话归拢时忽略可变系统提示词
+func filterNonSystemMessages(history []ChatMessage) []ChatMessage {
+	if len(history) == 0 {
+		return history
+	}
+	var filtered []ChatMessage
+	for _, m := range history {
+		if m.Role != "system" {
+			filtered = append(filtered, m)
+		}
+	}
+	return filtered
 }
 
 // inferSession 推导和归拢会话 ID 以及轮次（TurnID）
@@ -421,6 +408,10 @@ func (s *AnalysisService) inferSession(ev *TraceEvent) {
 		currentHistory = extractChatHistory(ev.RawRequest, ev.Format, "", "", nil, false, 0)
 	}
 
+	// 过滤 system 消息：IDE 的工作记忆机制会频繁修改 system prompt，
+	// 导致前缀匹配断裂。归拢时忽略 system 角色，仅以 user/assistant/tool 锚定会话。
+	currentCompact := filterNonSystemMessages(currentHistory)
+
 	var matchedSess *ConversationSession
 	cutoff := ev.Time.Add(-30 * time.Minute)
 
@@ -428,13 +419,13 @@ func (s *AnalysisService) inferSession(ev *TraceEvent) {
 		if sess.EndTime.Before(cutoff) {
 			continue
 		}
-		sessHistory := sess.getFullChatHistory()
-		n := len(sessHistory)
-		if len(currentHistory) >= n && n > 0 {
+		sessCompact := filterNonSystemMessages(sess.getFullChatHistory())
+		n := len(sessCompact)
+		if len(currentCompact) >= n && n > 0 {
 			match := true
 			for i := 0; i < n; i++ {
-				if currentHistory[i].Role != sessHistory[i].Role ||
-					currentHistory[i].Content != sessHistory[i].Content {
+				if currentCompact[i].Role != sessCompact[i].Role ||
+					currentCompact[i].Content != sessCompact[i].Content {
 					match = false
 					break
 				}
@@ -550,10 +541,7 @@ func getMD5Hash(text string) string {
 	return hex.EncodeToString(hasher.Sum(nil))
 }
 
-func getSHA256Hash(text string) string {
-	sum := sha256.Sum256([]byte(text))
-	return "sha256_" + hex.EncodeToString(sum[:])
-}
+
 
 func makePreview(text string, maxRunes int) string {
 	runes := []rune(text)
@@ -563,252 +551,18 @@ func makePreview(text string, maxRunes int) string {
 	return string(runes[:maxRunes]) + "...(preview)"
 }
 
-func (s *AnalysisService) contentPathFor(dateStr, hash string) (string, string) {
-	plainHash := strings.TrimPrefix(hash, "sha256_")
-	prefix := plainHash
-	if len(prefix) > 2 {
-		prefix = prefix[:2]
-	}
-	rel := filepath.Join("content", dateStr, prefix, hash+".json.gz")
-	return rel, filepath.Join(s.logDir, rel)
-}
-
-func (s *AnalysisService) writeContentBlob(kind, text string, ts time.Time) (*ContentRef, error) {
-	if text == "" {
-		return nil, nil
-	}
-
-	hash := getSHA256Hash(kind + "\x00" + text)
-	dateStr := ts.Format("2006-01-02")
-	relPath, absPath := s.contentPathFor(dateStr, hash)
-	if err := os.MkdirAll(filepath.Dir(absPath), 0755); err != nil {
-		return nil, err
-	}
-
-	if info, err := os.Stat(absPath); err == nil {
-		return &ContentRef{
-			Kind:            kind,
-			Hash:            hash,
-			Path:            relPath,
-			SizeBytes:       int64(len([]byte(text))),
-			CompressedBytes: info.Size(),
-			Preview:         makePreview(text, 600),
-		}, nil
-	}
-
-	blob := storedContentBlob{
-		Kind:     kind,
-		Hash:     hash,
-		Encoding: "utf-8",
-		Content:  text,
-	}
-	data, err := json.Marshal(blob)
-	if err != nil {
-		return nil, err
-	}
-
-	f, err := os.OpenFile(absPath, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0644)
-	if err != nil {
-		if info, statErr := os.Stat(absPath); statErr == nil {
-			return &ContentRef{
-				Kind:            kind,
-				Hash:            hash,
-				Path:            relPath,
-				SizeBytes:       int64(len([]byte(text))),
-				CompressedBytes: info.Size(),
-				Preview:         makePreview(text, 600),
-			}, nil
-		}
-		return nil, err
-	}
-	defer f.Close()
-
-	zw := gzip.NewWriter(f)
-	if _, err := zw.Write(data); err != nil {
-		zw.Close()
-		return nil, err
-	}
-	if err := zw.Close(); err != nil {
-		return nil, err
-	}
-
-	info, err := os.Stat(absPath)
-	if err != nil {
-		return nil, err
-	}
-	return &ContentRef{
-		Kind:            kind,
-		Hash:            hash,
-		Path:            relPath,
-		SizeBytes:       int64(len([]byte(text))),
-		CompressedBytes: info.Size(),
-		Preview:         makePreview(text, 600),
-	}, nil
-}
-
-func (s *AnalysisService) readContentRef(ref *ContentRef) (string, error) {
-	if ref == nil {
-		return "", fmt.Errorf("empty content ref")
-	}
-	cleanRel := filepath.Clean(ref.Path)
-	if filepath.IsAbs(cleanRel) || strings.HasPrefix(cleanRel, "..") {
-		return "", fmt.Errorf("invalid content path")
-	}
-	absPath := filepath.Join(s.logDir, cleanRel)
-	f, err := os.Open(absPath)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	zr, err := gzip.NewReader(f)
-	if err != nil {
-		return "", err
-	}
-	defer zr.Close()
-
-	data, err := io.ReadAll(zr)
-	if err != nil {
-		return "", err
-	}
-	var blob storedContentBlob
-	if err := json.Unmarshal(data, &blob); err != nil {
-		return "", err
-	}
-	if blob.Hash != ref.Hash || blob.Kind != ref.Kind {
-		return "", fmt.Errorf("content ref hash or kind mismatch")
-	}
-	return blob.Content, nil
-}
-
-func (s *AnalysisService) removeInsideLogDir(rel string) error {
-	base, err := filepath.Abs(s.logDir)
-	if err != nil {
-		return err
-	}
-	target, err := filepath.Abs(filepath.Join(s.logDir, rel))
-	if err != nil {
-		return err
-	}
-	if target != base && !strings.HasPrefix(target, base+string(os.PathSeparator)) {
-		return fmt.Errorf("refusing to remove path outside analysis log dir")
-	}
-	return os.RemoveAll(target)
-}
-
-func (s *AnalysisService) materializeRefs(ev *TraceEvent) {
-	if ev.RawRequest == "" && ev.RawRequestRef != nil {
-		if text, err := s.readContentRef(ev.RawRequestRef); err == nil {
-			ev.RawRequest = text
-		}
-	}
-	if ev.UpstreamRequest == "" && ev.UpstreamRequestRef != nil {
-		if text, err := s.readContentRef(ev.UpstreamRequestRef); err == nil {
-			ev.UpstreamRequest = text
-		}
-	}
-	if ev.RawResponse == "" && ev.RawResponseRef != nil {
-		if text, err := s.readContentRef(ev.RawResponseRef); err == nil {
-			ev.RawResponse = text
-		}
-	}
-	if ev.Response.Content == "" && ev.Response.ContentRef != nil {
-		if text, err := s.readContentRef(ev.Response.ContentRef); err == nil {
-			ev.Response.Content = text
-		}
-	}
-	if ev.Response.ReasoningContent == "" && ev.Response.ReasoningContentRef != nil {
-		if text, err := s.readContentRef(ev.Response.ReasoningContentRef); err == nil {
-			ev.Response.ReasoningContent = text
-		}
-	}
-	if len(ev.Response.ToolCalls) == 0 && len(ev.Response.ToolCallRefs) > 0 {
-		for i := range ev.Response.ToolCallRefs {
-			ref := &ev.Response.ToolCallRefs[i]
-			if text, err := s.readContentRef(ref); err == nil {
-				ev.Response.ToolCalls = append(ev.Response.ToolCalls, text)
-			}
-		}
-	}
-	for i := range ev.ChatHistory {
-		if ev.ChatHistory[i].Content == "" && ev.ChatHistory[i].ContentRef != nil {
-			if text, err := s.readContentRef(ev.ChatHistory[i].ContentRef); err == nil {
-				ev.ChatHistory[i].Content = text
-			}
-		}
-		if ev.ChatHistory[i].ReasoningContent == "" && ev.ChatHistory[i].ReasoningContentRef != nil {
-			if text, err := s.readContentRef(ev.ChatHistory[i].ReasoningContentRef); err == nil {
-				ev.ChatHistory[i].ReasoningContent = text
-			}
-		}
-		if len(ev.ChatHistory[i].ToolCalls) == 0 && len(ev.ChatHistory[i].ToolCallRefs) > 0 {
-			for j := range ev.ChatHistory[i].ToolCallRefs {
-				ref := &ev.ChatHistory[i].ToolCallRefs[j]
-				if text, err := s.readContentRef(ref); err == nil {
-					ev.ChatHistory[i].ToolCalls = append(ev.ChatHistory[i].ToolCalls, text)
-				}
-			}
-		}
-	}
-}
-
 func (s *AnalysisService) writeToDisk(ev *TraceEvent) {
+	dateStr := ev.Time.Format("2006-01-02")
+	if s.currentLogDate != dateStr {
+		s.writtenHashes = make(map[string]bool)
+		s.currentLogDate = dateStr
+	}
+
 	evCopy := *ev
 	evCopy.StorageError = ""
-
-	attach := func(kind, text string) *ContentRef {
-		ref, err := s.writeContentBlob(kind, text, ev.Time)
-		if err != nil {
-			if evCopy.StorageError == "" {
-				evCopy.StorageError = err.Error()
-			} else {
-				evCopy.StorageError += "; " + err.Error()
-			}
-			return nil
-		}
-		return ref
-	}
-
-	if ev.RawRequest != "" {
-		evCopy.RawRequestRef = attach("raw_client_request", ev.RawRequest)
-		evCopy.RawRequest = ""
-	}
-	if ev.UpstreamRequest != "" {
-		evCopy.UpstreamRequestRef = attach("raw_upstream_request", ev.UpstreamRequest)
-		evCopy.UpstreamRequest = ""
-	}
-	if ev.RawResponse != "" {
-		evCopy.RawResponseRef = attach("raw_response", ev.RawResponse)
-		evCopy.RawResponse = ""
-	}
-	if ev.Response.Content != "" {
-		if ref := attach("response_content", ev.Response.Content); ref != nil {
-			evCopy.Response.ContentRef = ref
-			evCopy.Response.Content = ref.Preview
-			ev.Response.ContentRef = ref
-			ev.Response.Content = ref.Preview
-		}
-	}
-	if ev.Response.ReasoningContent != "" {
-		if ref := attach("reasoning_content", ev.Response.ReasoningContent); ref != nil {
-			evCopy.Response.ReasoningContentRef = ref
-			evCopy.Response.ReasoningContent = ref.Preview
-			ev.Response.ReasoningContentRef = ref
-			ev.Response.ReasoningContent = ref.Preview
-		}
-	}
-	if len(ev.Response.ToolCalls) > 0 {
-		for _, tc := range ev.Response.ToolCalls {
-			if ref := attach("tool_calls", tc); ref != nil {
-				evCopy.Response.ToolCallRefs = append(evCopy.Response.ToolCallRefs, *ref)
-				ev.Response.ToolCallRefs = append(ev.Response.ToolCallRefs, *ref)
-			}
-		}
-		if len(evCopy.Response.ToolCallRefs) > 0 {
-			evCopy.Response.ToolCalls = nil
-			ev.Response.ToolCalls = nil
-		}
-	}
+	evCopy.RawRequest = ""
+	evCopy.UpstreamRequest = ""
+	evCopy.RawResponse = ""
 
 	if len(ev.ChatHistory) > 0 {
 		historyCopy := make([]ChatMessage, len(ev.ChatHistory))
@@ -817,33 +571,12 @@ func (s *AnalysisService) writeToDisk(ev *TraceEvent) {
 
 		for i := range evCopy.ChatHistory {
 			msg := &evCopy.ChatHistory[i]
-			origMsg := &ev.ChatHistory[i]
-			if msg.Content != "" {
-				if ref := attach("chat_message_content", msg.Content); ref != nil {
-					msg.ContentRef = ref
-					msg.Content = ref.Preview
-					origMsg.ContentRef = ref
-					origMsg.Content = ref.Preview
-				}
-			}
-			if msg.ReasoningContent != "" {
-				if ref := attach("reasoning_content", msg.ReasoningContent); ref != nil {
-					msg.ReasoningContentRef = ref
-					msg.ReasoningContent = ref.Preview
-					origMsg.ReasoningContentRef = ref
-					origMsg.ReasoningContent = ref.Preview
-				}
-			}
-			if len(msg.ToolCalls) > 0 {
-				for _, tc := range msg.ToolCalls {
-					if ref := attach("tool_calls", tc); ref != nil {
-						msg.ToolCallRefs = append(msg.ToolCallRefs, *ref)
-						origMsg.ToolCallRefs = append(origMsg.ToolCallRefs, *ref)
-					}
-				}
-				if len(msg.ToolCallRefs) > 0 {
-					msg.ToolCalls = nil
-					origMsg.ToolCalls = nil
+			if msg.Role == "system" && len(msg.Content) > 500 {
+				hash := getMD5Hash(msg.Content)
+				if s.writtenHashes[hash] {
+					msg.Content = "$ref_dict:md5_" + hash
+				} else {
+					s.writtenHashes[hash] = true
 				}
 			}
 		}
@@ -854,7 +587,7 @@ func (s *AnalysisService) writeToDisk(ev *TraceEvent) {
 		return
 	}
 
-	fileName := ev.Time.Format("2006-01-02") + ".jsonl"
+	fileName := dateStr + ".jsonl"
 	filePath := filepath.Join(s.logDir, fileName)
 
 	f, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -896,14 +629,11 @@ func (s *AnalysisService) cleanupOldLogs() {
 				path := filepath.Join(s.logDir, file.Name())
 				os.Remove(path)
 				dateStr := strings.TrimSuffix(file.Name(), ".jsonl")
-				if err := s.removeInsideLogDir(filepath.Join("content", dateStr)); err != nil {
-					log.Printf("[analysis] failed to clean content dir for %s: %v", file.Name(), err)
-				}
+				_ = os.RemoveAll(filepath.Join(s.logDir, "content", dateStr))
 				log.Printf("[analysis] cleaned up expired log file: %s", file.Name())
 			}
 		}
 
-		// 清理内存中的过期数据
 		for id, sess := range s.sessions {
 			if sess.EndTime.Before(cutoff) {
 				delete(s.sessions, id)
@@ -911,7 +641,6 @@ func (s *AnalysisService) cleanupOldLogs() {
 		}
 	}
 
-	// 启动时清理一次
 	cleanup()
 
 	for {
@@ -1077,20 +806,11 @@ func (s *AnalysisService) reconstructEventInMemory(ev *TraceEvent) {
 		if ev.Response.ReasoningContent != "" {
 			turn.ReasoningContent = ev.Response.ReasoningContent
 		}
-		if ev.Response.ReasoningContentRef != nil {
-			turn.ReasoningContentRef = ev.Response.ReasoningContentRef
-		}
 		if ev.Response.Content != "" {
 			turn.AssistantResponse = ev.Response.Content
 		}
-		if ev.Response.ContentRef != nil {
-			turn.AssistantResponseRef = ev.Response.ContentRef
-		}
 		if len(ev.Response.ToolCalls) > 0 {
 			turn.ToolCalls = ev.Response.ToolCalls
-		}
-		if len(ev.Response.ToolCallRefs) > 0 {
-			turn.ToolCallRefs = ev.Response.ToolCallRefs
 		}
 		if len(ev.ChatHistory) > 0 {
 			var prevHistory []ChatMessage
@@ -1139,7 +859,9 @@ func (s *AnalysisService) ClearHistory() error {
 			}
 		}
 	}
-	if err := s.removeInsideLogDir("content"); err != nil && !os.IsNotExist(err) {
+
+	contentDir := filepath.Join(s.logDir, "content")
+	if err := os.RemoveAll(contentDir); err != nil && !os.IsNotExist(err) {
 		log.Printf("[analysis] failed to delete content directory: %v", err)
 	}
 
@@ -1615,28 +1337,31 @@ func (s *AnalysisService) GetTimelinePage(id string, offset, limit int) (Timelin
 	var items []TimelineItem
 	for _, k := range keys {
 		turn := sess.Turns[k]
-		for idx, msg := range turn.ChatHistory {
-			ref := msg.ContentRef
-			preview := msg.Content
-			if preview == "" && ref != nil {
-				preview = ref.Preview
+		var toolsDetail []ToolMeta
+		for _, ev := range turn.Events {
+			if ev.Phase == "primary" {
+				toolsDetail = ev.Request.ToolsDetail
+				break
 			}
+		}
+		for idx, msg := range turn.ChatHistory {
+			preview := msg.Content
 			if preview == "" && msg.ReasoningContent != "" {
 				preview = msg.ReasoningContent
-				ref = msg.ReasoningContentRef
 			}
 			if preview == "" && len(msg.ToolCalls) > 0 {
 				preview = strings.Join(msg.ToolCalls, "\n")
 			}
 			items = append(items, TimelineItem{
-				Type:       "message",
-				SessionID:  id,
-				TurnID:     turn.TurnID,
-				Role:       msg.Role,
-				Time:       turn.StartTime,
-				Preview:    makePreview(preview, 600),
-				ContentRef: ref,
-				MessageIdx: idx,
+				Type:             "message",
+				SessionID:        id,
+				TurnID:           turn.TurnID,
+				Role:             msg.Role,
+				Time:             turn.StartTime,
+				Preview:          preview,
+				ReasoningContent: msg.ReasoningContent,
+				MessageIdx:       idx,
+				Tools:            toolsDetail,
 			})
 		}
 		for _, ev := range turn.Events {
@@ -1664,10 +1389,6 @@ func (s *AnalysisService) GetTimelinePage(id string, offset, limit int) (Timelin
 		end = total
 	}
 	return TimelinePage{Items: items[offset:end], Total: total, Offset: offset, Limit: limit}, nil
-}
-
-func (s *AnalysisService) ResolveContent(ref ContentRef) (string, error) {
-	return s.readContentRef(&ref)
 }
 
 // ExportMarkdown 导出特定 Session 的 Markdown 报告
@@ -1736,14 +1457,8 @@ func (s *AnalysisService) ExportMarkdown(id string) (string, error) {
 		}
 
 		if turn.ReasoningContent != "" {
-			reasoningText := turn.ReasoningContent
-			if turn.ReasoningContentRef != nil {
-				if full, err := s.readContentRef(turn.ReasoningContentRef); err == nil {
-					reasoningText = full
-				}
-			}
 			sb.WriteString("<details>\n<summary>🧠 <b>模型深度思考过程</b></summary>\n\n")
-			sb.WriteString("```\n" + reasoningText + "\n```\n")
+			sb.WriteString("```\n" + turn.ReasoningContent + "\n```\n")
 			sb.WriteString("</details>\n\n")
 		}
 
@@ -1756,13 +1471,7 @@ func (s *AnalysisService) ExportMarkdown(id string) (string, error) {
 		}
 
 		if turn.AssistantResponse != "" {
-			responseText := turn.AssistantResponse
-			if turn.AssistantResponseRef != nil {
-				if full, err := s.readContentRef(turn.AssistantResponseRef); err == nil {
-					responseText = full
-				}
-			}
-			sb.WriteString(fmt.Sprintf("**🤖 模型回复**:\n\n%s\n\n", responseText))
+			sb.WriteString(fmt.Sprintf("**🤖 模型回复**:\n\n%s\n\n", turn.AssistantResponse))
 		}
 
 		sb.WriteString("---\n\n")
@@ -1801,21 +1510,41 @@ func buildRequestMeta(data map[string]interface{}, format string, transformed, e
 		meta.MaxTokens = int(mt)
 	}
 
-	// 提取 tools
+	// 提取 tools 和 tools_detail
 	if toolsArr, ok := data["tools"].([]interface{}); ok {
 		var tools []string
+		var toolsDetail []ToolMeta
 		for _, tVal := range toolsArr {
 			if tMap, ok := tVal.(map[string]interface{}); ok {
-				if tType, _ := tMap["type"].(string); tType == "function" {
+				tType, _ := tMap["type"].(string)
+				if tType == "function" {
 					if fnMap, ok := tMap["function"].(map[string]interface{}); ok {
-						if fnName, _ := fnMap["name"].(string); fnName != "" {
+						fnName, _ := fnMap["name"].(string)
+						fnDesc, _ := fnMap["description"].(string)
+						if fnName != "" {
 							tools = append(tools, fnName)
+							toolsDetail = append(toolsDetail, ToolMeta{
+								Name:        fnName,
+								Description: fnDesc,
+							})
 						}
+					}
+				} else {
+					// 兼容 Anthropic 直接在最外层定义 name 和 description 的情况
+					fnName, _ := tMap["name"].(string)
+					fnDesc, _ := tMap["description"].(string)
+					if fnName != "" {
+						tools = append(tools, fnName)
+						toolsDetail = append(toolsDetail, ToolMeta{
+							Name:        fnName,
+							Description: fnDesc,
+						})
 					}
 				}
 			}
 		}
 		meta.Tools = tools
+		meta.ToolsDetail = toolsDetail
 	}
 
 	messages, ok := data["messages"].([]interface{})

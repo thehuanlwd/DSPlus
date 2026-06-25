@@ -229,7 +229,7 @@ func TestLogDeduplication(t *testing.T) {
 	}
 	svc.writeToDisk(ev2)
 
-	// 3. 读取磁盘上写入的原始文件，验证 ContentRef 生效且可无损回读
+	// 3. 读取磁盘上写入的原始文件，验证去重引用
 	fileName := now.Format("2006-01-02") + ".jsonl"
 	filePath := filepath.Join(tempDir, fileName)
 	data, err := os.ReadFile(filePath)
@@ -246,49 +246,29 @@ func TestLogDeduplication(t *testing.T) {
 	json.Unmarshal([]byte(lines[0]), &savedEv1)
 	json.Unmarshal([]byte(lines[1]), &savedEv2)
 
-	if len(savedEv1.ChatHistory) < 1 || savedEv1.ChatHistory[0].ContentRef == nil {
-		t.Fatalf("ev1: expected system content to be stored as ContentRef")
+	if len(savedEv1.ChatHistory) < 1 || savedEv1.ChatHistory[0].Content != longSystemPrompt {
+		t.Fatalf("ev1: expected system content to be stored as raw text")
 	}
-	if len(savedEv2.ChatHistory) < 1 || savedEv2.ChatHistory[0].ContentRef == nil {
-		t.Fatalf("ev2: expected system content to be stored as ContentRef")
-	}
-	if savedEv1.ChatHistory[0].ContentRef.Hash != savedEv2.ChatHistory[0].ContentRef.Hash {
-		t.Errorf("expected repeated system prompt to reuse same content hash")
-	}
-	fullSystem, err := svc.ResolveContent(*savedEv1.ChatHistory[0].ContentRef)
-	if err != nil {
-		t.Fatalf("failed to resolve system prompt ref: %v", err)
-	}
-	if fullSystem != longSystemPrompt {
-		t.Errorf("expected full system prompt to round trip")
-	}
-	if savedEv1.RawRequest != "" || savedEv1.RawResponse != "" {
-		t.Errorf("expected raw bodies to be stored by ref, not inline")
-	}
-	if savedEv1.RawRequestRef == nil || savedEv1.RawResponseRef == nil {
-		t.Fatalf("expected raw request/response refs to be present")
+	expectedRef := "$ref_dict:md5_" + getMD5Hash(longSystemPrompt)
+	if len(savedEv2.ChatHistory) < 1 || savedEv2.ChatHistory[0].Content != expectedRef {
+		t.Fatalf("ev2: expected system content to be stored as reference: %s, got %s", expectedRef, savedEv2.ChatHistory[0].Content)
 	}
 
-	// 4. 清空内存状态并调用 loadHistoryFromDisk 加载，验证索引和引用可恢复
+	// 4. 清空内存状态并调用 loadHistoryFromDisk 加载，验证引用可被还原
 	svc.sessions = make(map[string]*ConversationSession)
 	svc.loadHistoryFromDisk()
 
-	sess1, ok1 := svc.sessions["sess_1"]
 	sess2, ok2 := svc.sessions["sess_2"]
-	if !ok1 || !ok2 {
-		t.Fatalf("sessions not restored properly")
+	if !ok2 {
+		t.Fatalf("session 2 not restored properly")
 	}
 
-	turn1, ok1 := sess1.Turns[1]
 	turn2, ok2 := sess2.Turns[1]
-	if !ok1 || !ok2 {
-		t.Fatalf("turns not restored properly")
+	if !ok2 {
+		t.Fatalf("turn 2 not restored properly")
 	}
 
-	if len(turn1.ChatHistory) < 1 || turn1.ChatHistory[0].ContentRef == nil {
-		t.Errorf("turn1: expected system content ref to be restored")
-	}
-	if len(turn2.ChatHistory) < 1 || turn2.ChatHistory[0].ContentRef == nil {
-		t.Errorf("turn2: expected system content ref to be restored")
+	if len(turn2.ChatHistory) < 1 || turn2.ChatHistory[0].Content != longSystemPrompt {
+		t.Errorf("turn2: expected system content to be recovered to original text, got: %s", turn2.ChatHistory[0].Content)
 	}
 }

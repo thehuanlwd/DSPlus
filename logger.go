@@ -23,6 +23,7 @@ type LogEntry struct {
 	Path             string            `json:"path"`
 	StatusCode       int               `json:"status_code"`
 	LatencyMs        int64             `json:"latency_ms"`
+	Stream           bool              `json:"stream"`
 	Transformed      bool              `json:"transformed"`
 	HasSystemPrompt  bool              `json:"has_system_prompt"`
 	SemanticType     string            `json:"semantic_type,omitempty"`

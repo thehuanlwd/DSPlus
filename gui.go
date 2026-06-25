@@ -81,8 +81,7 @@ func handleGUI(w http.ResponseWriter, r *http.Request, l *Logger, cfg *SafeConfi
 		handleAPIAnalysisExport(w, r, path, svc)
 	case strings.HasPrefix(path, "/analysis/sessions/") && strings.HasSuffix(path, "/timeline"):
 		handleAPIAnalysisTimeline(w, r, path, svc)
-	case strings.HasPrefix(path, "/analysis/sessions/") && strings.HasSuffix(path, "/content"):
-		handleAPIAnalysisContent(w, r, path, svc)
+
 	case strings.HasPrefix(path, "/analysis/sessions/"):
 		handleAPIAnalysisSessionDetail(w, r, path, svc)
 	case path == "/logs" && r.Method == "DELETE":
@@ -238,6 +237,7 @@ func handleAPISaveConfig(w http.ResponseWriter, r *http.Request, cfg *SafeConfig
 		changed = setBoolField(updates, "anti_loop_enabled", &c.AntiLoopEnabled) || changed
 		changed = setBoolField(updates, "debug_mode", &c.DebugMode) || changed
 		changed = setBoolField(updates, "auto_reasoning_content", &c.AutoReasoningContent) || changed
+		changed = setBoolField(updates, "auto_fix_empty_content", &c.AutoFixEmptyContent) || changed
 		changed = setBoolField(updates, "analysis_enabled", &c.AnalysisEnabled) || changed
 		changed = setBoolField(updates, "lan_access", &c.LANAccess) || changed
 		changed = setIntField(updates, "max_tokens_custom", &c.MaxTokensCustom, 0) || changed
@@ -421,31 +421,6 @@ func handleAPIAnalysisTimeline(w http.ResponseWriter, r *http.Request, path stri
 	json.NewEncoder(w).Encode(page)
 }
 
-func handleAPIAnalysisContent(w http.ResponseWriter, r *http.Request, path string, svc *AnalysisService) {
-	id := strings.TrimPrefix(path, "/analysis/sessions/")
-	id = strings.TrimSuffix(id, "/content")
-	_ = id
-	if svc == nil {
-		http.Error(w, `{"error":"analysis service not initialized"}`, http.StatusInternalServerError)
-		return
-	}
-
-	ref := ContentRef{
-		Kind: r.URL.Query().Get("kind"),
-		Hash: r.URL.Query().Get("hash"),
-		Path: r.URL.Query().Get("path"),
-	}
-	if ref.Kind == "" || ref.Hash == "" || ref.Path == "" {
-		http.Error(w, `{"error":"missing content ref"}`, http.StatusBadRequest)
-		return
-	}
-	text, err := svc.ResolveContent(ref)
-	if err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusNotFound)
-		return
-	}
-	json.NewEncoder(w).Encode(map[string]string{"content": text})
-}
 
 func handleAPIAnalysisExport(w http.ResponseWriter, r *http.Request, path string, svc *AnalysisService) {
 	id := strings.TrimPrefix(path, "/analysis/sessions/")

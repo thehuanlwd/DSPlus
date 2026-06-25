@@ -29,6 +29,7 @@ type Config struct {
 	AntiLoopCheckTokens      int    `json:"antiloop_check_tokens"`
 	DebugMode                bool   `json:"debug_mode"`
 	AutoReasoningContent     bool   `json:"auto_reasoning_content"`
+	AutoFixEmptyContent      bool   `json:"auto_fix_empty_content"`
 	AnalysisEnabled          bool   `json:"analysis_enabled"`
 	AnalysisPersistence      bool   `json:"analysis_persistence"`
 	AnalysisPersistRawBodies bool   `json:"analysis_persist_raw_bodies"`
@@ -53,6 +54,7 @@ func DefaultConfig() Config {
 		AntiLoopRetryEffort:      "high",
 		AntiLoopCheckTokens:      0,
 		AutoReasoningContent:     true,
+		AutoFixEmptyContent:      false,
 		AnalysisEnabled:          true,
 		AnalysisPersistence:      true,
 		AnalysisPersistRawBodies: true,

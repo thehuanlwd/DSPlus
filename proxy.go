@@ -164,6 +164,10 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		injectReasoningContent(data)
 	}
 
+	if data != nil && cfg.AutoFixEmptyContent {
+		fixEmptyAssistantContent(data)
+	}
+
 	if data != nil {
 		if b, err := json.Marshal(data); err == nil {
 			transformedBody = b
@@ -193,6 +197,12 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 	proxyReq.Host = ""
 
 	// ── 前置创建连接中的日志 ──
+	isStreamReq := false
+	if data != nil {
+		if s, ok := data["stream"].(bool); ok {
+			isStreamReq = s
+		}
+	}
 	logID := s.logger.Add(LogEntry{
 		Time:            startTime,
 		Format:          format,
@@ -200,6 +210,7 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		Path:            r.URL.Path,
 		StatusCode:      0,
 		LatencyMs:       0,
+		Stream:          isStreamReq,
 		Transformed:     transformed,
 		HasSystemPrompt: hasSystemPrompt,
 		SemanticType:    semanticType,
@@ -410,6 +421,36 @@ func injectReasoningContent(data map[string]interface{}) {
 			continue
 		}
 		m["reasoning_content"] = ""
+	}
+}
+
+func fixEmptyAssistantContent(data map[string]interface{}) {
+	messages, ok := data["messages"].([]interface{})
+	if !ok {
+		return
+	}
+
+	for i := len(messages) - 1; i >= 0; i-- {
+		m, ok := messages[i].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if role, _ := m["role"].(string); role != "assistant" {
+			continue
+		}
+
+		reasoning, hasReasoning := m["reasoning_content"].(string)
+		if !hasReasoning || reasoning == "" {
+			continue
+		}
+
+		content, hasContent := m["content"].(string)
+		if hasContent && content != "" {
+			continue
+		}
+
+		m["content"] = reasoning
+		return
 	}
 }
 
