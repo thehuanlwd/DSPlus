@@ -1,0 +1,2191 @@
+/* ── DSPlus 前端核心业务与交互逻辑 (YoRHa Terminal v2.0) ── */
+
+let lastMouseDownX = 0;
+let lastMouseDownY = 0;
+let lastMouseDownTime = 0;
+
+document.addEventListener('mousedown', (e) => {
+  lastMouseDownX = e.clientX;
+  lastMouseDownY = e.clientY;
+  lastMouseDownTime = Date.now();
+});
+
+let currentDetailId = null;
+let ws = null;
+let logs = [];
+let currentSessionId = null;
+let sessionSummaries = [];
+let analysisSessionsOffset = 0;
+let analysisSessionsLoading = false;
+let analysisSessionsHasMore = true;
+let analysisTimelineState = {
+  sessionId: null,
+  offset: 0,
+  limit: 100,
+  total: 0,
+  loading: false,
+  hasMore: false
+};
+
+const semanticLabelMap = {
+  'tool_call': '工具调用',
+  'callback_call': '回传调用',
+  'tool_result': '工具回传',
+  'thinking_cont': '继续思考',
+  'thinking_finished': '思考完成',
+  'antiloop_retry': '防无限思考重试',
+  'antiloop_analyzer': '防无限思考分析',
+  'antihallucination_retry': '思维修正',
+  'debug': 'Debug',
+  'chat': '对话'
+};
+
+function $(id) { return document.getElementById(id); }
+
+function formatCacheRatio(hit, miss) {
+  const total = hit + miss;
+  if (total <= 0) return '0%';
+  if (miss === 0) return '100%';
+  if (hit === 0) return '0%';
+  const pct = (hit / total) * 100;
+  if (pct > 99.9) return '99.9%';
+  if (pct < 0.1) return '0.1%';
+  return pct.toFixed(1) + '%';
+}
+
+// ── 应用主题 ──
+function applyTheme() {
+  const theme = localStorage.getItem('dsplus_theme') || 'yorha';
+  document.body.className = 'theme-' + theme;
+  const cfgTheme = $('cfgTheme');
+  if (cfgTheme) {
+    cfgTheme.value = theme;
+  }
+}
+
+// ── 初始化 ──
+function init() {
+  // 初始化主题外观
+  applyTheme();
+
+  // 导航栏切换 (YoRHa 标签式切换)
+  document.querySelectorAll('.yorha-nav button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.yorha-nav button').forEach(b => b.classList.remove('active-tab'));
+      btn.classList.add('active-tab');
+      document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+      
+      const pageId = btn.dataset.page;
+      $(pageId).classList.add('active');
+      
+      if (pageId === 'settings') loadSettings();
+      if (pageId === 'analysis') loadAnalysisSessions();
+      
+      // 切页时自动收拢抽屉
+      if (pageId !== 'dashboard') {
+        closeDrawer();
+      }
+    });
+  });
+
+  $('btnClear').addEventListener('click', clearLogs);
+  $('searchInput').addEventListener('input', renderLogs);
+  
+  // 设置控件关联联动
+  $('cfgThinkingMode').addEventListener('change', () => {
+    $('effortGroup').style.display = $('cfgThinkingMode').value === 'enabled' ? '' : 'none';
+  });
+  $('cfgExtraPlacement').addEventListener('change', () => {
+    $('extraPromptGroup').style.display = $('cfgExtraPlacement').value === 'none' ? 'none' : '';
+  });
+  $('cfgMaxTokensMode').addEventListener('change', () => {
+    $('maxTokensCustomGroup').style.display = $('cfgMaxTokensMode').value === 'custom' ? '' : 'none';
+  });
+  $('cfgAntiLoop').addEventListener('change', () => {
+    $('antiloopSubSettings').style.display = $('cfgAntiLoop').checked ? '' : 'none';
+  });
+  $('cfgAntiHallucination').addEventListener('change', () => {
+    $('antihallucinationSubSettings').style.display = $('cfgAntiHallucination').checked ? '' : 'none';
+  });
+
+  $('cfgAntiloopRetryThinking').addEventListener('change', () => {
+    $('antiloopEffortGroup').style.display = $('cfgAntiloopRetryThinking').value === 'enabled' ? '' : 'none';
+  });
+  $('cfgAnalysisEnabled').addEventListener('change', () => {
+    $('analysisSubSettings').style.display = $('cfgAnalysisEnabled').checked ? '' : 'none';
+  });
+
+  // 主题实时切换监听
+  const cfgTheme = $('cfgTheme');
+  if (cfgTheme) {
+    cfgTheme.addEventListener('change', () => {
+      const selectedTheme = cfgTheme.value;
+      document.body.className = 'theme-' + selectedTheme;
+    });
+  }
+
+  // 抽屉外部点击收拢
+  document.addEventListener('click', function (e) {
+    const drawer = $('yorhaDrawer');
+    if (drawer && drawer.classList.contains('open')) {
+      if (!drawer.contains(e.target) && !e.target.closest('.yorha-table tbody tr')) {
+        closeDrawer();
+      }
+    }
+  });
+
+  const sessionListContainer = $('sessionListContainer');
+  if (sessionListContainer) {
+    sessionListContainer.addEventListener('scroll', () => {
+      const { scrollTop, scrollHeight, clientHeight } = sessionListContainer;
+      if (scrollHeight - scrollTop - clientHeight < 50) {
+        loadNextAnalysisSessions();
+      }
+    });
+  }
+
+  connectWS();
+  loadStatus();
+}
+
+// ── 加载状态 ──
+async function loadStatus() {
+  try {
+    const r = await fetch('/api/status');
+    const s = await r.json();
+    $('statPort').textContent = s.port;
+    $('statTotal').textContent = s.total;
+    $('statTotalDashboard').textContent = s.total;
+    $('statToday').textContent = s.today;
+    $('emptyPort').textContent = s.port;
+  } catch(e) {}
+}
+
+// ── 加载日志 ──
+async function loadLogs() {
+  try {
+    const r = await fetch('/api/logs?limit=200');
+    const data = await r.json();
+    logs = data.entries || [];
+    renderLogs();
+    $('statTotal').textContent = data.total;
+    $('statTotalDashboard').textContent = data.total;
+    loadStatus();
+  } catch(e) {}
+}
+
+// ── 数值滚动的 Ease-Out 缓动动画 ──
+function animateValue(element, start, end, duration = 150) {
+  if (start === end) return;
+  const startTime = performance.now();
+  
+  function update(currentTime) {
+    const elapsed = currentTime - startTime;
+    const progress = Math.min(elapsed / duration, 1);
+    const current = Math.floor(start + (end - start) * progress);
+    element.textContent = current;
+    
+    if (progress < 1) {
+      requestAnimationFrame(update);
+    }
+  }
+  requestAnimationFrame(update);
+}
+
+// ── 格式化 Badges 结构 ──
+function getFormatBadgeHtml(e) {
+  if (e.format === 'anthropic') {
+    return '<span class="badge badge-anthropic">anthropic</span>';
+  } else if (e.format === 'openai') {
+    return '<span class="badge badge-openai">OpenAI</span>';
+  } else {
+    return '<span class="badge badge-unknown">' + (e.format||'?') + '</span>';
+  }
+}
+
+function getSemanticBadgeHtml(type) {
+  switch (type) {
+    case '对话开始':
+      return '<span class="badge badge-chat">对话开始</span>';
+    case '工具调用':
+      return '<span class="badge badge-tool-call">工具调用</span>';
+    case '工具回传':
+      return '<span class="badge badge-tool-result">工具回传</span>';
+    case '调用回传':
+      return '<span class="badge badge-callback-call">调用回传</span>';
+    case '完成对话':
+      return '<span class="badge badge-yes">完成对话</span>';
+    default:
+      if (type === 'chat') return '<span class="badge badge-chat">对话开始</span>';
+      if (type === 'tool_call') return '<span class="badge badge-tool-call">工具调用</span>';
+      if (type === 'tool_result') return '<span class="badge badge-tool-result">工具回传</span>';
+      return '<span class="badge badge-unknown">' + (type || '--') + '</span>';
+  }
+}
+
+// 特殊事件徽章：防无限思考/防幻觉/debug/思考完成 统一收敛到此处，不混淆格式与语义列
+function getSpecialBadgeHtml(e) {
+  var rt = e.request_type || '';
+  if (rt === 'antiloop_analyzer') {
+    return '<span class="badge badge-antiloop-analyzer">防无限思考分析</span>';
+  } else if (rt === 'antiloop_retry') {
+    return '<span class="badge badge-antiloop-retry">防无限思考重试</span>';
+  } else if (rt === 'antihallucination_retry') {
+    return '<span class="badge badge-antihallucination">思维修正</span>';
+  } else if (rt === 'debug') {
+    return '<span class="badge badge-debug">Debug</span>';
+  }
+  // thinking_finished 通过 system_event 标识（防幻觉拦截后更新）
+  if (e.system_event === 'thinking_finished') {
+    return '<span class="badge badge-thinking-finished">思考完成</span>';
+  }
+  return '<span style="color:var(--yorha-fg-dim);font-size:10px;">--</span>';
+}
+
+// 端点路径展示：特殊类型已在最后列有徽章，API端点列不再显示冗余的 POST/路径
+function getPathText(e) {
+  var rt = e.request_type || '';
+  if (rt === 'debug') {
+    return '<span style="color:var(--yorha-fg-dim);font-size:10px;">--</span>';
+  }
+  return (e.method || 'POST') + ' ' + (e.path || '');
+}
+
+function getCacheHtml(e) {
+  if (e.token_usage && e.token_usage.total > 0) {
+    const u = e.token_usage;
+    const promptTotal = u.cache_hit + u.cache_miss;
+    if (u.cache_hit === 0 && promptTotal > 0) {
+      return `<td class="cache-td"><span class="tokens-new tooltip-wrap">new<span class="tt">无缓存命中（全新上下文）</span></span></td>`;
+    } else if (promptTotal > 0) {
+      const pct = u.cache_hit / promptTotal * 100;
+      const cls = pct >= 75 ? 'tokens-high' : pct >= 35 ? 'tokens-mid' : 'tokens-low';
+      const ratioStr = formatCacheRatio(u.cache_hit, u.cache_miss);
+      return `<td class="cache-td"><span class="tooltip-wrap ${cls}">${ratioStr}<span class="tt">命中: ${u.cache_hit} | 未命中: ${u.cache_miss}</span></span></td>`;
+    } else {
+      return `<td class="cache-td"><span class="tokens-new tooltip-wrap">new<span class="tt">无缓存（新的上下文）</span></span></td>`;
+    }
+  }
+  return `<td class="cache-td" style="color:var(--yorha-fg-dim)">--</td>`;
+}
+
+function getLatencyGridHtml(e) {
+  let latencyGridHtml = '';
+  if (e.latency_ms > 0) {
+    const blocksCount = Math.min(5, Math.ceil(e.latency_ms / 1000));
+    let latencyCls = 'latency-low';
+    if (blocksCount === 3 || blocksCount === 4) {
+      latencyCls = 'latency-mid';
+    } else if (blocksCount === 5) {
+      latencyCls = 'latency-high';
+    }
+
+    latencyGridHtml = `<div class="latency-grid ${latencyCls}">`;
+    for (let i = 1; i <= 5; i++) {
+      const activeCls = i <= blocksCount ? ' active' : '';
+      latencyGridHtml += `<div class="latency-block${activeCls}"></div>`;
+    }
+    latencyGridHtml += '</div>';
+  }
+  return latencyGridHtml;
+}
+
+// ── 局部更新 Token Cell (含 Loading、数字变化翻滚、临时暂停状态展示) ──
+function updateTokenCell(cell, e) {
+  const usage = e.token_usage;
+  const status = e.status || "completed";
+
+  if (!usage || usage.total <= 0) {
+    const loadingHtml = `<span class="status-loading">Loading...</span>`;
+    if (status === "connecting") {
+      if (cell.innerHTML !== loadingHtml) cell.innerHTML = loadingHtml;
+    } else {
+      if (cell.innerHTML !== '--') {
+        cell.innerHTML = `--`;
+        cell.style.color = "var(--yorha-fg-dim)";
+      }
+    }
+    return;
+  }
+
+  let curStatus = status;
+  if (curStatus === "connecting") curStatus = "streaming";
+
+  const span = cell.querySelector('.roll-number');
+  const ttSpan = cell.querySelector('.tt');
+  const oldVal = span ? parseInt(span.textContent) || 0 : 0;
+  const newVal = usage.total;
+  const tips = `输入: ${usage.prompt} | 输出: ${usage.completion} | 命中: ${usage.cache_hit} | 未命中: ${usage.cache_miss}`;
+
+  if (curStatus === "streaming") {
+    if (!span || !ttSpan) {
+      cell.innerHTML = `<span class="tooltip-wrap"><span class="roll-number">${oldVal}</span><span class="tt">${tips}</span></span>`;
+      const numSpan = cell.querySelector('.roll-number');
+      animateValue(numSpan, oldVal, newVal);
+    } else {
+      if (ttSpan.innerHTML !== tips) ttSpan.innerHTML = tips;
+      if (oldVal !== newVal) {
+        animateValue(span, oldVal, newVal);
+      }
+    }
+  } else if (curStatus === "paused") {
+    const hasPausedClass = cell.querySelector('.status-paused');
+    if (!span || !ttSpan || !hasPausedClass) {
+      cell.innerHTML = `<span class="status-paused tooltip-wrap"><span class="roll-number">${oldVal}</span>...<span class="tt">${tips}</span></span>`;
+      const numSpan = cell.querySelector('.roll-number');
+      animateValue(numSpan, oldVal, newVal);
+    } else {
+      if (ttSpan.innerHTML !== tips) ttSpan.innerHTML = tips;
+      if (oldVal !== newVal) {
+        animateValue(span, oldVal, newVal);
+      }
+    }
+  } else {
+    const finalHtml = `<span class="tooltip-wrap">${newVal}<span class="tt">${tips}</span></span>`;
+    if (cell.innerHTML !== finalHtml) {
+      cell.innerHTML = finalHtml;
+    }
+  }
+}
+
+function updateRowCells(tr, e, time, semBadge, fmtBadge, streamBadge, tfBadge, scClass, scText, latencyGridHtml, latencyStr, cacheHtml, specialBadge) {
+  const tds = tr.children;
+  if (tds.length >= 11) {
+    if (tds[0].innerHTML !== time) tds[0].innerHTML = time;
+    if (tds[1].innerHTML !== semBadge) tds[1].innerHTML = semBadge;
+    if (tds[2].innerHTML !== fmtBadge) tds[2].innerHTML = fmtBadge;
+    if (tds[3].innerHTML !== streamBadge) tds[3].innerHTML = streamBadge;
+    if (tds[4].innerHTML !== tfBadge) tds[4].innerHTML = tfBadge;
+    
+    if (tds[5].innerHTML !== scText) {
+      tds[5].innerHTML = scText;
+      tds[5].className = scClass;
+    }
+    
+    const latencyContent = `${latencyGridHtml}<span class="latency">${latencyStr}</span>`;
+    if (tds[6].innerHTML !== latencyContent) {
+      tds[6].innerHTML = latencyContent;
+    }
+    
+    updateTokenCell(tds[7], e);
+    
+    // 缓存列替换
+    const tempTable = document.createElement('table');
+    tempTable.innerHTML = `<tr>${cacheHtml}</tr>`;
+    const newCacheTd = tempTable.querySelector('td');
+    if (tds[8].innerHTML !== newCacheTd.innerHTML) {
+      tds[8].innerHTML = newCacheTd.innerHTML;
+      tds[8].className = newCacheTd.className;
+    }
+    
+    const pathContent = getPathText(e);
+    if (tds[9].innerHTML !== pathContent) {
+      tds[9].innerHTML = pathContent;
+    }
+
+    // 特殊事件列：防无限思考/防幻觉/debug
+    if (tds[10].innerHTML !== specialBadge) {
+      tds[10].innerHTML = specialBadge;
+    }
+  }
+}
+
+// ── 渲染日志列表 ──
+function renderLogs() {
+  const query = $('searchInput').value.toLowerCase();
+  const filtered = logs.filter(e => {
+    if (!query) return true;
+    const semanticLabelMap = {
+      '对话开始': '对话开始',
+      '工具调用': '工具调用',
+      '工具回传': '工具回传',
+      '调用回传': '调用回传',
+      '完成对话': '完成对话',
+      'chat': '对话开始',
+      'tool_call': '工具调用',
+      'tool_result': '工具回传',
+      'thinking_cont': '继续思考'
+    };
+    const semLabel = semanticLabelMap[e.semantic_type] || '对话开始';
+    return (e.path||'').toLowerCase().includes(query) ||
+           (e.format||'').toLowerCase().includes(query) ||
+           (e.semantic_type||'').toLowerCase().includes(query) ||
+           semLabel.includes(query) ||
+           String(e.status_code).includes(query);
+  });
+
+  const body = $('logBody');
+
+  if (filtered.length === 0) {
+    body.innerHTML = '';
+    if (logs.length === 0) {
+      $('logTable').style.display = 'none';
+      $('emptyState').style.display = '';
+    } else {
+      $('logTable').style.display = '';
+      $('emptyState').style.display = 'none';
+      body.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--yorha-fg-dim);padding:20px">无匹配记录</td></tr>';
+    }
+    return;
+  }
+
+  $('logTable').style.display = '';
+  $('emptyState').style.display = 'none';
+
+  const existingRows = {};
+  body.querySelectorAll('tr[data-id]').forEach(tr => {
+    existingRows[tr.dataset.id] = tr;
+  });
+
+  const fragment = document.createDocumentFragment();
+  filtered.forEach(e => {
+    const time = new Date(e.time).toLocaleTimeString('zh-CN', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+    const fmtBadge = getFormatBadgeHtml(e);
+    const streamBadge = e.stream ? '<span class="badge badge-yes">YES</span>' : '<span class="badge badge-no">NO</span>';
+    const tfBadge = e.transformed ? '<span class="badge badge-yes">是</span>' : '<span class="badge badge-no">否</span>';
+    const semBadge = getSemanticBadgeHtml(e.semantic_type);
+    const specialBadge = getSpecialBadgeHtml(e);
+
+    const scClass = e.status_code === 0 ? 'status-pending' : (e.status_code >= 400 ? 'status-400' : e.status_code >= 200 && e.status_code < 300 ? 'status-200' : '');
+    const scText = e.status_code === 0 ? 'PENDING' : e.status_code;
+    const isPending = e.status_code === 0 || e.latency_ms === 0;
+    const latencyStr = isPending ? '--' : (e.latency_ms >= 1000 ? (e.latency_ms/1000).toFixed(1)+'s' : e.latency_ms+'ms');
+
+    const cacheHtml = getCacheHtml(e);
+    const latencyGridHtml = getLatencyGridHtml(e);
+
+    let tr = existingRows[e.id];
+    if (tr) {
+      updateRowCells(tr, e, time, semBadge, fmtBadge, streamBadge, tfBadge, scClass, scText, latencyGridHtml, latencyStr, cacheHtml, specialBadge);
+    } else {
+      tr = document.createElement('tr');
+      tr.dataset.id = e.id;
+      tr.addEventListener('click', () => showDetail(e.id));
+      
+      tr.innerHTML = `
+        <td>${time}</td>
+        <td>${semBadge}</td>
+        <td>${fmtBadge}</td>
+        <td>${streamBadge}</td>
+        <td>${tfBadge}</td>
+        <td class="${scClass}">${scText}</td>
+        <td>${latencyGridHtml}<span class="latency">${latencyStr}</span></td>
+        <td class="tokens-td"></td>
+        ${cacheHtml}
+        <td style="color:var(--yorha-fg-dim)">${getPathText(e)}</td>
+        <td>${specialBadge}</td>
+      `;
+      updateTokenCell(tr.querySelector('.tokens-td'), e);
+    }
+
+    if (e.id === currentDetailId) {
+      tr.classList.add('selected-row');
+    } else {
+      tr.classList.remove('selected-row');
+    }
+
+    fragment.appendChild(tr);
+  });
+
+  body.innerHTML = '';
+  body.appendChild(fragment);
+}
+
+// ── 右侧滑动抽屉详情展示 ──
+async function showDetail(id) {
+  currentDetailId = id;
+  
+  // 更新表格中高亮行
+  document.querySelectorAll('.yorha-table tbody tr').forEach(tr => {
+    if (tr.dataset.id == id) {
+      tr.classList.add('selected-row');
+    } else {
+      tr.classList.remove('selected-row');
+    }
+  });
+
+  try {
+    const r = await fetch('/api/logs/' + id);
+    const e = await r.json();
+    window._currentDrawerDetail = e; // 全局缓存
+
+    $('drawerTitle').textContent = 'DATA TRACE #' + id;
+
+    // 1. 基本信息
+    const time = new Date(e.time).toLocaleString('zh-CN');
+    const rtLabel = e.request_type === 'antiloop_analyzer' ? ' (防无限思考分析器)' :
+                    e.request_type === 'antiloop_retry' ? ' (防无限思考重试)' : '';
+    let info = `时间: ${time}
+ 格式: ${e.format}${rtLabel}
+ 流式: ${e.stream ? '是' : '否'}
+ 方法: ${e.method} ${e.path}
+ 状态码: ${e.status_code === 0 ? 'PENDING' : e.status_code}
+ 延迟: ${e.status_code === 0 || e.latency_ms === 0 ? '等待首响...' : e.latency_ms + 'ms'}
+ 是否重组: ${e.transformed ? '是' : '否'}
+ 包含System Prompt: ${e.has_system_prompt ? '是' : '否'}`;
+    $('drawer-info').textContent = info;
+
+    // 2. 响应头
+    if (e.response_headers && Object.keys(e.response_headers).length > 0) {
+      $('sec-headers').style.display = '';
+    } else {
+      $('sec-headers').style.display = 'none';
+    }
+
+    // 3. 原始请求体
+    if (e.original_body) {
+      $('sec-rawRequest').style.display = '';
+    } else {
+      $('sec-rawRequest').style.display = 'none';
+    }
+
+    // 4. 重组后请求体
+    if (e.transformed_body) {
+      $('sec-mutatedRequest').style.display = '';
+    } else {
+      $('sec-mutatedRequest').style.display = 'none';
+    }
+
+    // 5. 上游原始响应（仅 anti-loop 模式下有值）
+    if (e.upstream_response_body) {
+      $('sec-upstreamResponse').style.display = '';
+    } else {
+      $('sec-upstreamResponse').style.display = 'none';
+    }
+
+    // 6. API响应体与最终回复
+    if (e.response_body) {
+      $('sec-apiResponse').style.display = '';
+      const finalReply = parseFinalReply(e.response_body, e.format);
+      const hasFinalContent = finalReply && (finalReply.reasoning || finalReply.content || (finalReply.toolCalls && finalReply.toolCalls.length > 0));
+      $('sec-finalReply').style.display = hasFinalContent ? '' : 'none';
+    } else {
+      $('sec-apiResponse').style.display = 'none';
+      $('sec-finalReply').style.display = 'none';
+    }
+
+    if (!e.original_body && !e.transformed_body && !e.response_body) {
+      $('drawer-info').textContent += '\n\n提示: 请开启"详细记录"模式以查看完整请求与响应内容。';
+    }
+
+    // 默认折叠抽屉中所有段落并清空内容区（除基本信息外）
+    document.querySelectorAll('.yorha-drawer-body .detail-section').forEach(sec => {
+      sec.classList.add('collapsed');
+      const content = sec.querySelector('.detail-content');
+      if (content && sec.id !== 'sec-info') {
+        content.textContent = '';
+      }
+    });
+
+    $('yorhaDrawer').classList.add('open');
+  } catch(err) {
+    console.error(err);
+  }
+}
+
+function closeDrawer() {
+  const drawer = $('yorhaDrawer');
+  if (drawer) {
+    drawer.classList.remove('open');
+  }
+  currentDetailId = null;
+  document.querySelectorAll('.yorha-table tbody tr').forEach(tr => tr.classList.remove('selected-row'));
+  
+  // 清理 DOM 内容以释放大对象内存
+  document.querySelectorAll('.yorha-drawer-body .detail-section').forEach(sec => {
+    sec.classList.add('collapsed');
+    const content = sec.querySelector('.detail-content');
+    if (content && sec.id !== 'sec-info') {
+      content.textContent = '';
+    }
+  });
+  window._currentDrawerDetail = null;
+}
+
+// ── 折叠块切换（懒加载真折叠） ──
+function toggleDetailSection(label) {
+  const section = label.parentElement;
+  const wasCollapsed = section.classList.contains('collapsed');
+  
+  if (wasCollapsed) {
+    section.classList.remove('collapsed');
+    const contentEl = section.querySelector('.detail-content');
+    if (contentEl) {
+      const e = window._currentDrawerDetail;
+      if (e) {
+            if (section.id === 'sec-headers') {
+              contentEl.textContent = Object.entries(e.response_headers || {}).map(([k,v]) => `${k}: ${v}`).join('\n');
+            } else if (section.id === 'sec-rawRequest') {
+              contentEl.textContent = tryPretty(e.original_body);
+            } else if (section.id === 'sec-mutatedRequest') {
+              contentEl.textContent = tryPretty(e.transformed_body);
+            } else if (section.id === 'sec-upstreamResponse') {
+              contentEl.textContent = prettyBody(e.upstream_response_body);
+            } else if (section.id === 'sec-apiResponse') {
+              contentEl.textContent = prettyBody(e.response_body);
+            } else if (section.id === 'sec-finalReply') {
+              contentEl.innerHTML = renderFinalReply(e.response_body, e.format);
+            }
+      }
+    }
+  } else {
+    section.classList.add('collapsed');
+    if (section.id !== 'sec-info') {
+      const contentEl = section.querySelector('.detail-content');
+      if (contentEl) {
+        contentEl.textContent = '';
+      }
+    }
+  }
+}
+
+// ── 抽屉段落文本复制 ──
+function copyDetailText(btn) {
+  const content = btn.parentElement.querySelector('.detail-content').textContent;
+  navigator.clipboard.writeText(content).then(() => {
+    btn.textContent = '已复制';
+    setTimeout(() => { btn.textContent = '复制'; }, 1500);
+  }).catch(() => {
+    btn.textContent = '失败';
+    setTimeout(() => { btn.textContent = '复制'; }, 1500);
+  });
+}
+
+function tryPretty(str) {
+  try {
+    return JSON.stringify(JSON.parse(str), null, 2);
+  } catch(e) {
+    return str;
+  }
+}
+
+// prettySSE 对 SSE 流文本做行级 JSON 美化：每行 data: 后的 JSON 单独格式化。
+function prettySSE(str) {
+  if (!str || !str.includes('data: ')) return str;
+  return str.split('\n').map(line => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('data: ')) return line;
+    const dataStr = trimmed.slice(6);
+    if (dataStr === '[DONE]' || dataStr === '') return line;
+    try {
+      const obj = JSON.parse(dataStr);
+      return 'data: ' + JSON.stringify(obj, null, 2);
+    } catch (e) {
+      return line; // 该行非合法 JSON，原样保留
+    }
+  }).join('\n');
+}
+
+// 根据内容选择美化方式：SSE 流用行级美化，单 JSON 用整体美化
+function prettyBody(str) {
+  if (!str) return str;
+  if (str.includes('data: ')) return prettySSE(str);
+  return tryPretty(str);
+}
+
+// parseFinalReply 从原始响应体提取分段：reasoning / toolCalls / content
+// 返回 {reasoning, toolCalls, content}，toolCalls 为 [{id,name,input}] 结构化数组
+function parseFinalReply(rawText, format) {
+  const result = { reasoning: "", toolCalls: [], content: "" };
+  if (!rawText) return result;
+
+  if (rawText.includes("data: ")) {
+    // 流式
+    const openaiBuilders = {}; // index -> {id,name,args}
+    const anthropicBuilders = {}; // index -> {id,name,input}
+    const lines = rawText.split("\n");
+    for (let line of lines) {
+      line = line.trim();
+      if (!line.startsWith("data: ")) continue;
+      const dataStr = line.slice(6);
+      if (dataStr === "[DONE]") continue;
+      try {
+        const chunk = JSON.parse(dataStr);
+        // OpenAI choices 格式
+        if (chunk.choices && chunk.choices.length > 0) {
+          const delta = chunk.choices[0].delta;
+          if (delta) {
+            if (delta.reasoning_content) result.reasoning += delta.reasoning_content;
+            if (delta.content) result.content += delta.content;
+            // OpenAI 流式 tool_calls
+            if (Array.isArray(delta.tool_calls)) {
+              for (const tc of delta.tool_calls) {
+                const idx = tc.index || 0;
+                if (!openaiBuilders[idx]) openaiBuilders[idx] = { id: '', name: '', args: '' };
+                if (tc.id) openaiBuilders[idx].id = tc.id;
+                if (tc.function) {
+                  if (tc.function.name) openaiBuilders[idx].name = tc.function.name;
+                  if (tc.function.arguments) openaiBuilders[idx].args += tc.function.arguments;
+                }
+              }
+            }
+          }
+        }
+        // Anthropic content_block_delta
+        if (chunk.type === "content_block_delta" && chunk.delta) {
+          if (chunk.delta.thinking) result.reasoning += chunk.delta.thinking;
+          if (chunk.delta.text) result.content += chunk.delta.text;
+          if (chunk.delta.type === "input_json_delta" && chunk.delta.partial_json) {
+            const idx = chunk.index || 0;
+            if (anthropicBuilders[idx]) anthropicBuilders[idx].input += chunk.delta.partial_json;
+          }
+        }
+        // Anthropic content_block_start (tool_use)
+        if (chunk.type === "content_block_start" && chunk.content_block && chunk.content_block.type === "tool_use") {
+          const idx = chunk.index || 0;
+          anthropicBuilders[idx] = {
+            id: chunk.content_block.id || '',
+            name: chunk.content_block.name || '',
+            input: ''
+          };
+        }
+      } catch (err) {}
+    }
+    // 收集 OpenAI tool_calls
+    for (const idx of Object.keys(openaiBuilders).sort((a,b)=>a-b)) {
+      const b = openaiBuilders[idx];
+      result.toolCalls.push({ id: b.id, name: b.name, input: b.args });
+    }
+    // 收集 Anthropic tool_calls
+    for (const idx of Object.keys(anthropicBuilders).sort((a,b)=>a-b)) {
+      const b = anthropicBuilders[idx];
+      result.toolCalls.push({ id: b.id, name: b.name, input: b.input });
+    }
+  } else {
+    // 非流式
+    try {
+      const data = JSON.parse(rawText);
+      if (data.choices && data.choices.length > 0) {
+        const msg = data.choices[0].message;
+        if (msg) {
+          if (msg.reasoning_content) result.reasoning = msg.reasoning_content;
+          if (msg.content) result.content = msg.content;
+          // OpenAI 非流式 tool_calls
+          if (Array.isArray(msg.tool_calls)) {
+            for (const tc of msg.tool_calls) {
+              if (tc.function) {
+                result.toolCalls.push({ id: tc.id || '', name: tc.function.name || '', input: tc.function.arguments || '' });
+              }
+            }
+          }
+        }
+      }
+      // Anthropic 非流式 content 数组
+      if (Array.isArray(data.content)) {
+        for (const item of data.content) {
+          if (item.type === "text" && item.text) result.content += item.text;
+          if (item.type === "thinking" && item.thinking) result.reasoning += item.thinking;
+          if (item.type === "tool_use") {
+            result.toolCalls.push({ id: item.id || '', name: item.name || '', input: JSON.stringify(item.input || {}) });
+          }
+        }
+      }
+    } catch (err) {}
+  }
+  return result;
+}
+
+// renderFinalReply 把 parseFinalReply 的分段结果渲染为 HTML
+function renderFinalReply(rawText, format) {
+  const r = parseFinalReply(rawText, format);
+  let html = '';
+  if (r.reasoning) {
+    html += `<div style="margin-bottom:8px;"><div style="color:var(--yorha-fg-dim); font-size:11px; margin-bottom:2px;">[思考]</div><div style="white-space:pre-wrap; color:var(--yorha-fg-dim);">&lt;think&gt;\n${escapeHtml(r.reasoning)}\n&lt;/think&gt;</div></div>`;
+  }
+  if (r.toolCalls && r.toolCalls.length > 0) {
+    const tcHtml = r.toolCalls.map(tc => {
+      let inputStr = tc.input || '';
+      try { inputStr = JSON.stringify(JSON.parse(tc.input), null, 2); } catch(e) {}
+      return `<div style="margin: 4px 0; padding: 4px 6px; background: rgba(0,0,0,0.05); border-left: 2px solid var(--yorha-accent);"><span style="color:var(--yorha-accent); font-weight:600;">${escapeHtml(tc.name)}</span><pre style="margin:2px 0 0 0; white-space:pre-wrap; font-size:11px;">${escapeHtml(inputStr)}</pre></div>`;
+    }).join('');
+    html += `<div style="margin-bottom:8px;"><div style="color:var(--yorha-fg-dim); font-size:11px; margin-bottom:2px;">[工具调用]</div>${tcHtml}</div>`;
+  }
+  if (r.content) {
+    html += `<div><div style="color:var(--yorha-fg-dim); font-size:11px; margin-bottom:2px;">[回复]</div><div style="white-space:pre-wrap;">${escapeHtml(r.content)}</div></div>`;
+  }
+  return html || '(无内容)';
+}
+
+function escapeHtml(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ── WebSocket 实时同步 ──
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host + '/ws');
+
+  ws.onmessage = (e) => {
+    try {
+      const entry = JSON.parse(e.data);
+      const idx = logs.findIndex(l => l.id === entry.id);
+      if (idx >= 0) {
+        logs[idx] = entry;
+      } else {
+        logs.unshift(entry);
+      }
+      if (logs.length > 200) logs.length = 200;
+      renderLogs();
+      loadStatus();
+
+      if (entry.id === currentDetailId) {
+        showDetail(entry.id);
+      }
+    } catch(ex) {}
+  };
+
+  ws.onclose = () => setTimeout(connectWS, 2000);
+  ws.onerror = () => ws.close();
+}
+
+// ── 清空日志 ──
+async function clearLogs() {
+  try {
+    await fetch('/api/logs', { method: 'DELETE' });
+  } catch(e) {}
+  logs = [];
+  closeDrawer();
+  renderLogs();
+  loadStatus();
+}
+
+// ── 加载设置 ──
+async function loadSettings() {
+  try {
+    const r = await fetch('/api/config');
+    const cfg = await r.json();
+    $('cfgAPIKey').value = cfg.api_key || '';
+    $('cfgPort').value = cfg.port || 8188;
+    $('cfgLanAccess').checked = cfg.lan_access || false;
+    $('cfgOpenAIUpstream').value = cfg.openai_upstream || 'https://api.deepseek.com';
+    $('cfgAnthropicUpstream').value = cfg.anthropic_upstream || 'https://api.deepseek.com/anthropic';
+    $('cfgVerbose').checked = cfg.verbose_logging || false;
+    $('cfgAutoGUI').checked = cfg.auto_open_gui !== false;
+    $('cfgThinkingMode').value = cfg.thinking_mode || '';
+    $('cfgReasoningEffort').value = cfg.reasoning_effort || 'high';
+    $('cfgPlacement').value = cfg.system_prompt_placement || 'first';
+    $('cfgExtraPlacement').value = cfg.extra_prompt_placement || 'none';
+    $('cfgExtraPrompt').value = cfg.extra_prompt || '';
+    $('extraPromptGroup').style.display = (cfg.extra_prompt_placement && cfg.extra_prompt_placement !== 'none') ? '' : 'none';
+    $('effortGroup').style.display = cfg.thinking_mode === 'enabled' ? '' : 'none';
+    $('cfgMaxTokensMode').value = cfg.max_tokens_mode || '';
+    $('cfgMaxTokensCustom').value = cfg.max_tokens_custom || 8000;
+    $('maxTokensCustomGroup').style.display = cfg.max_tokens_mode === 'custom' ? '' : 'none';
+    $('cfgAntiLoop').checked = cfg.anti_loop_enabled || false;
+    $('antiloopSubSettings').style.display = cfg.anti_loop_enabled ? '' : 'none';
+    $('cfgAntiloopRetryModel').value = cfg.antiloop_retry_model || 'deepseek-v4-flash';
+    $('cfgAntiloopRetryThinking').value = cfg.antiloop_retry_thinking || '';
+    $('cfgAntiloopRetryEffort').value = cfg.antiloop_retry_effort || 'high';
+    $('antiloopEffortGroup').style.display = cfg.antiloop_retry_thinking === 'enabled' ? '' : 'none';
+    $('cfgAntiloopCheckTokens').value = cfg.antiloop_check_tokens || 0;
+    $('cfgAntiHallucination').checked = cfg.anti_hallucination_enabled || false;
+    $('cfgAntiHallucinationPrompt').value = cfg.anti_hallucination_prompt || '';
+    $('antihallucinationSubSettings').style.display = cfg.anti_hallucination_enabled ? '' : 'none';
+
+
+
+    $('cfgDebugMode').checked = cfg.debug_mode || false;
+    $('cfgAutoReasoning').checked = cfg.auto_reasoning_content !== false;
+    $('cfgAutoFixEmpty').checked = cfg.auto_fix_empty_content || false;
+
+    $('cfgAnalysisEnabled').checked = cfg.analysis_enabled !== false;
+    $('analysisSubSettings').style.display = cfg.analysis_enabled !== false ? '' : 'none';
+    $('cfgAnalysisRetentionDays').value = cfg.analysis_retention_days || 7;
+
+    $('cfgTheme').value = cfg.theme || 'yorha';
+
+    setRestartBanner(cfg.restart_required, cfg.restart_reasons);
+
+    // 回填完成后，重新刷新并转换自定义的尼尔下拉组件
+    convertSelectsToYorha();
+  } catch(e) {
+    triggerAlert('加载配置失败');
+  }
+}
+
+// ── 保存配置 ──
+async function saveSettings() {
+  const payload = {
+    api_key: $('cfgAPIKey').value,
+    port: parseInt($('cfgPort').value) || 8188,
+    lan_access: $('cfgLanAccess').checked,
+    openai_upstream: $('cfgOpenAIUpstream').value,
+    anthropic_upstream: $('cfgAnthropicUpstream').value,
+    verbose_logging: $('cfgVerbose').checked,
+    auto_open_gui: $('cfgAutoGUI').checked,
+    thinking_mode: $('cfgThinkingMode').value,
+    reasoning_effort: $('cfgReasoningEffort').value,
+    system_prompt_placement: $('cfgPlacement').value,
+    extra_prompt_placement: $('cfgExtraPlacement').value,
+    extra_prompt: $('cfgExtraPrompt').value,
+    max_tokens_mode: $('cfgMaxTokensMode').value,
+    max_tokens_custom: parseInt($('cfgMaxTokensCustom').value) || 0,
+    anti_loop_enabled: $('cfgAntiLoop').checked,
+    antiloop_retry_model: $('cfgAntiloopRetryModel').value,
+    antiloop_retry_thinking: $('cfgAntiloopRetryThinking').value,
+    antiloop_retry_effort: $('cfgAntiloopRetryEffort').value,
+    antiloop_check_tokens: parseInt($('cfgAntiloopCheckTokens').value) || 0,
+    anti_hallucination_enabled: $('cfgAntiHallucination').checked,
+    anti_hallucination_prompt: $('cfgAntiHallucinationPrompt').value,
+
+    debug_mode: $('cfgDebugMode').checked,
+    auto_reasoning_content: $('cfgAutoReasoning').checked,
+    auto_fix_empty_content: $('cfgAutoFixEmpty').checked,
+    analysis_enabled: $('cfgAnalysisEnabled').checked,
+    analysis_persistence: $('cfgAnalysisEnabled').checked,
+    analysis_persist_raw_bodies: $('cfgAnalysisEnabled').checked,
+    analysis_retention_days: parseInt($('cfgAnalysisRetentionDays').value) || 7,
+    theme: $('cfgTheme').value,
+  };
+
+  try {
+    const r = await fetch('/api/config', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    });
+    const resp = await r.json();
+    setRestartBanner(resp.restart_required, resp.restart_reasons);
+
+    // 主题写入 localStorage
+    const selectedTheme = $('cfgTheme').value;
+    localStorage.setItem('dsplus_theme', selectedTheme);
+    document.body.className = 'theme-' + selectedTheme;
+
+    if (resp.status === 'saved') {
+      triggerAlert(resp.restart_required ? '配置已保存，重启后生效' : '配置已保存');
+    } else {
+      triggerAlert(resp.restart_required ? '配置已保存，等待重启' : '配置已保存');
+    }
+  } catch(e) {
+    triggerAlert('保存失败');
+  }
+}
+
+// ── 清除分析历史会话 ──
+async function clearAnalysisHistory() {
+  if (!confirm('确定要清空所有分析历史会话和本地日志文件吗？此操作不可恢复。')) {
+    return;
+  }
+  try {
+    const r = await fetch('/api/analysis/sessions', { method: 'DELETE' });
+    const resp = await r.json();
+    if (resp.status === 'cleared') {
+      triggerAlert('分析历史已全部清除');
+      currentSessionId = null;
+      loadAnalysisSessions();
+    } else {
+      triggerAlert('清除失败');
+    }
+  } catch(e) {
+    triggerAlert('请求清除失败');
+  }
+}
+
+// ── 恢复默认 ──
+function resetSettings() {
+  $('cfgAPIKey').value = '';
+  $('cfgPort').value = 8188;
+  $('cfgLanAccess').checked = false;
+  $('cfgOpenAIUpstream').value = 'https://api.deepseek.com';
+  $('cfgAnthropicUpstream').value = 'https://api.deepseek.com/anthropic';
+  $('cfgVerbose').checked = false;
+  $('cfgAutoGUI').checked = true;
+  $('cfgThinkingMode').value = '';
+  $('cfgReasoningEffort').value = 'high';
+  $('cfgPlacement').value = 'first';
+  $('cfgExtraPlacement').value = 'none';
+  $('cfgExtraPrompt').value = '';
+  $('effortGroup').style.display = 'none';
+  $('extraPromptGroup').style.display = 'none';
+  $('cfgMaxTokensMode').value = '';
+  $('cfgMaxTokensCustom').value = 8000;
+  $('maxTokensCustomGroup').style.display = 'none';
+  $('cfgAntiLoop').checked = false;
+  $('antiloopSubSettings').style.display = 'none';
+  $('cfgAntiloopRetryModel').value = 'deepseek-v4-flash';
+  $('cfgAntiloopRetryThinking').value = '';
+  $('cfgAntiloopRetryEffort').value = 'high';
+  $('antiloopEffortGroup').style.display = 'none';
+  $('cfgAntiloopCheckTokens').value = 0;
+  $('cfgDebugMode').checked = false;
+  $('cfgAutoReasoning').checked = true;
+  $('cfgAutoFixEmpty').checked = false;
+
+  $('cfgAnalysisEnabled').checked = true;
+  $('analysisSubSettings').style.display = 'none';
+  $('cfgAnalysisRetentionDays').value = 7;
+
+  // 主题重置
+  localStorage.setItem('dsplus_theme', 'yorha');
+  applyTheme();
+
+  // 刷新下拉组件显示
+  convertSelectsToYorha();
+
+  // 触发 change 联动
+  const selects = document.querySelectorAll('#settings select, #settings input[type=checkbox]');
+  selects.forEach(el => el.dispatchEvent(new Event('change')));
+
+  triggerAlert('已重置为默认值');
+}
+
+function setRestartBanner(visible, reasons) {
+  const banner = $('restartBanner');
+  if (!banner) return;
+  banner.style.display = visible ? '' : 'none';
+  if (visible) {
+    const names = Array.isArray(reasons) && reasons.length ? reasons.join('、') : '部分设置';
+    $('restartReasonText').textContent = names + '已保存，重启服务后生效。';
+  }
+  const btn = $('btnRestartService');
+  if (btn) {
+    btn.disabled = false;
+    btn.textContent = '重启服务';
+  }
+}
+
+async function restartService() {
+  const btn = $('btnRestartService');
+  const nextPort = parseInt($('cfgPort').value) || 8188;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '正在重启...';
+  }
+  try {
+    await fetch('/api/restart', { method: 'POST' });
+    triggerAlert('正在重启服务...');
+    setTimeout(() => {
+      location.href = 'http://127.0.0.1:' + nextPort + '/';
+    }, 1800);
+  } catch(e) {
+    triggerAlert('重启请求失败，请手动重启 DSPlus');
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '重启服务';
+    }
+  }
+}
+
+// ── 寄叶系统警报 Banner (替代 Toast) ──
+function triggerAlert(msg) {
+  const banner = $('yorhaAlert');
+  if (!banner) return;
+  $('alertMessage').textContent = msg;
+  banner.classList.add('show');
+  setTimeout(() => {
+    banner.classList.remove('show');
+  }, 2500);
+}
+
+// ── 加载分析历史会话 ──
+async function loadAnalysisSessions() {
+  if (analysisSessionsLoading) return;
+  analysisSessionsLoading = true;
+  analysisSessionsOffset = 0;
+  analysisSessionsHasMore = true;
+
+  const container = $('sessionListContainer');
+  container.innerHTML = '<div class="empty-state">读取中...</div>';
+  try {
+    const r = await fetch('/api/analysis/sessions?limit=50&offset=0');
+    sessionSummaries = await r.json();
+    analysisSessionsLoading = false;
+    
+    if (!sessionSummaries || sessionSummaries.length < 50) {
+      analysisSessionsHasMore = false;
+    }
+    renderSessionList();
+  } catch(e) {
+    analysisSessionsLoading = false;
+    container.innerHTML = '<div class="empty-state"><p>加载历史失败</p></div>';
+  }
+}
+
+async function loadNextAnalysisSessions() {
+  if (analysisSessionsLoading || !analysisSessionsHasMore) return;
+  analysisSessionsLoading = true;
+  
+  analysisSessionsOffset += 50;
+  
+  const container = $('sessionListContainer');
+  const loader = document.createElement('div');
+  loader.className = 'session-loading-indicator';
+  loader.style.cssText = 'text-align: center; padding: 10px; font-size: 11px; color: var(--yorha-fg-dim);';
+  loader.textContent = '读取中...';
+  container.appendChild(loader);
+  
+  try {
+    const r = await fetch(`/api/analysis/sessions?limit=50&offset=${analysisSessionsOffset}`);
+    const nextList = await r.json();
+    
+    loader.remove();
+    analysisSessionsLoading = false;
+    
+    if (!nextList || nextList.length < 50) {
+      analysisSessionsHasMore = false;
+    }
+    
+    if (nextList && nextList.length > 0) {
+      sessionSummaries = sessionSummaries.concat(nextList);
+      appendSessionList(nextList);
+    }
+  } catch(e) {
+    loader.remove();
+    analysisSessionsLoading = false;
+  }
+}
+
+function createSessionDOM(s) {
+  const time = new Date(s.start_time).toLocaleTimeString('zh-CN', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  const fmtType = (s.format || 'openai').toUpperCase();
+  const model = s.models || '--';
+  const status = s.status || 200;
+  const statusClass = status >= 400 ? 'status-400' : 'status-200';
+  const badgeClass = s.format === 'anthropic' ? 'badge-anthropic' : 'badge-openai';
+
+  const item = document.createElement('div');
+  item.className = 'session-item' + (s.id === currentSessionId ? ' active' : '');
+  
+  item.innerHTML = `
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+      <span style="font-size: 11px; color: var(--yorha-fg-dim); font-family: monospace;">${time}</span>
+      <span class="badge ${badgeClass}" style="padding: 1px 6px; font-size: 10px;">${fmtType}</span>
+    </div>
+    <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; min-width: 0;">
+      <span style="font-size: 12px; font-weight: 500; color: inherit; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0;" title="${model}">${model}</span>
+      <span class="${statusClass}" style="font-size: 11px; font-weight: 600; font-family: monospace; flex-shrink: 0;">${status}</span>
+    </div>
+  `;
+  item.addEventListener('click', () => selectSession(s.id));
+  return item;
+}
+
+function renderSessionList() {
+  const container = $('sessionListContainer');
+  container.innerHTML = '';
+  if (sessionSummaries.length === 0) {
+    container.innerHTML = '<div class="empty-state"><p>暂无请求分析记录</p><p style="font-size:11px;margin-top:4px">发送 API 请求即可生成诊断</p></div>';
+    $('analysisMainPanel').style.display = 'none';
+    $('analysisMainEmpty').style.display = '';
+    return;
+  }
+
+  sessionSummaries.forEach(s => {
+    container.appendChild(createSessionDOM(s));
+  });
+}
+
+function appendSessionList(nextList) {
+  const container = $('sessionListContainer');
+  nextList.forEach(s => {
+    container.appendChild(createSessionDOM(s));
+  });
+}
+
+function selectSession(id) {
+  currentSessionId = id;
+  renderSessionList();
+  showSessionDetail(id);
+}
+
+// ── 展示会话诊断详情 ──
+async function showSessionDetail(id) {
+  $('analysisMainPanel').style.display = '';
+  $('analysisMainEmpty').style.display = 'none';
+
+  try {
+    const r = await fetch('/api/analysis/sessions/' + id);
+    const s = await r.json();
+
+    $('ansSessionId').textContent = 'REPORT #' + id.substring(5, 11).toUpperCase();
+    $('ansRequestCount').textContent = s.request_count;
+    $('ansTokens').textContent = `${s.total_tokens} (入: ${s.prompt_tokens} / 出: ${s.completion_tokens})`;
+    
+    const ratio = formatCacheRatio(s.cache_hit_tokens, s.cache_miss_tokens);
+    $('ansCacheRatio').textContent = `${ratio} (命中: ${s.cache_hit_tokens})`;
+    
+    $('ansRetries').textContent = s.retries + ' 次重试';
+    $('ansRetries').style.display = s.retries > 0 ? '' : 'none';
+    $('ansErrors').textContent = s.errors + ' 异常';
+    $('ansErrors').style.display = s.errors > 0 ? '' : 'none';
+
+    // 提取 tools 信息
+    let tools = [];
+    for (let tid in s.turns) {
+      const turn = s.turns[tid];
+      const primaryEvent = turn.events.find(e => e.phase === 'primary');
+      if (primaryEvent && primaryEvent.request && primaryEvent.request.tools && primaryEvent.request.tools.length > 0) {
+        tools = primaryEvent.request.tools;
+        break;
+      }
+    }
+    
+    const toolsWrapper = $('ansToolsWrapper');
+    const toolsContent = $('ansToolsContent');
+    const toolsArrow = $('toolsArrow');
+    if (tools && tools.length > 0) {
+      toolsWrapper.style.display = '';
+      toolsContent.innerHTML = tools.map(t => `<div style="padding: 2px 0;">• ${escapeHtml(JSON.stringify(t))}</div>`).join('');
+      toolsContent.style.display = 'none';
+      toolsArrow.className = 'arrow collapsed';
+      toolsArrow.textContent = '▼';
+    } else {
+      toolsWrapper.style.display = 'none';
+    }
+
+    await loadChatTimeline(id, true);
+  } catch(e) {
+    triggerAlert('加载详情失败');
+  }
+}
+
+function toggleToolsFold() {
+  const el = $('ansToolsContent');
+  const arrow = $('toolsArrow');
+  if (el.style.display === 'none') {
+    el.style.display = 'block';
+    arrow.className = 'arrow';
+    arrow.textContent = '▲';
+  } else {
+    el.style.display = 'none';
+    arrow.className = 'arrow collapsed';
+    arrow.textContent = '▼';
+  }
+}
+
+async function loadChatTimeline(sessionId, reset = false) {
+  const timeline = $('chatTimeline');
+  if (reset) {
+    timeline.innerHTML = '';
+    analysisTimelineState = {
+      sessionId,
+      offset: 0,
+      limit: 100,
+      total: 0,
+      loading: false,
+      hasMore: true
+    };
+  }
+  if (analysisTimelineState.loading || !analysisTimelineState.hasMore) return;
+
+  analysisTimelineState.loading = true;
+  const loadingNode = document.createElement('div');
+  loadingNode.className = 'system-notice';
+  loadingNode.textContent = '加载中...';
+  timeline.appendChild(loadingNode);
+
+  try {
+    const url = `/api/analysis/sessions/${sessionId}/timeline?offset=${analysisTimelineState.offset}&limit=${analysisTimelineState.limit}`;
+    const r = await fetch(url);
+    if (!r.ok) throw new Error('timeline request failed');
+    const page = await r.json();
+    loadingNode.remove();
+
+    analysisTimelineState.total = page.total || 0;
+    const items = page.items || [];
+    items.forEach(item => timeline.appendChild(createTimelineItemDOM(sessionId, item)));
+    analysisTimelineState.offset += items.length;
+    analysisTimelineState.hasMore = analysisTimelineState.offset < analysisTimelineState.total;
+
+    if (analysisTimelineState.hasMore) {
+      const more = document.createElement('button');
+      more.className = 'btn btn-secondary';
+      more.style.margin = '12px auto';
+      more.style.display = 'block';
+      more.textContent = '加载更多';
+      more.onclick = () => {
+        more.remove();
+        loadChatTimeline(sessionId, false);
+      };
+      timeline.appendChild(more);
+    }
+  } catch (e) {
+    loadingNode.textContent = '时间线加载失败';
+  } finally {
+    analysisTimelineState.loading = false;
+  }
+}
+
+// createUserTurnDOM 渲染一个 UserTurnGroup 为可折叠区块，内部按 step 顺序渲染。
+function createUserTurnDOM(sessionId, group) {
+  const container = document.createElement('div');
+  container.className = 'user-turn-group';
+  container.style.cssText = 'margin-bottom: 16px; border: 1px solid var(--yorha-border); border-radius: 4px; overflow: hidden;';
+
+  // 头部摘要
+  const durStr = group.summary.duration_ms >= 1000
+    ? (group.summary.duration_ms / 1000).toFixed(1) + 's'
+    : group.summary.duration_ms + 'ms';
+  const headerParts = [];
+  if (group.summary.tool_count > 0) headerParts.push(`${group.summary.tool_count}个工具` + (group.summary.tool_names ? `(${group.summary.tool_names})` : ''));
+  if (group.summary.thinking_chars > 0) headerParts.push(`思考${group.summary.thinking_chars}字`);
+  if (group.summary.reply_chars > 0) headerParts.push(`回复${group.summary.reply_chars}字`);
+  headerParts.push(`耗时${durStr}`);
+  const headerMeta = headerParts.join(' · ');
+
+  const timeStr = new Date(group.start_time).toLocaleTimeString('zh-CN', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  const header = document.createElement('div');
+  header.style.cssText = 'padding: 8px 12px; background: rgba(0,0,0,0.06); cursor: pointer; display:flex; justify-content:space-between; align-items:center; font-size: 11px;';
+  header.innerHTML = `
+    <span style="color: var(--yorha-fg-dim);">▼ 用户提问 #${group.turn_id} (${timeStr})</span>
+    <span style="color: var(--yorha-accent); font-size: 10px;">${escapeHtml(headerMeta)}</span>
+  `;
+
+  const body = document.createElement('div');
+  body.style.cssText = 'padding: 10px 12px;';
+
+  // 渲染 steps
+  (group.steps || []).forEach(step => {
+    body.appendChild(createStepDOM(sessionId, step));
+  });
+
+  // 渲染 events（analyzer/retry）
+  (group.events || []).forEach(ev => {
+    if (ev.phase === 'analyzer' || ev.phase === 'retry') {
+      const notice = document.createElement('div');
+      notice.className = ev.phase === 'analyzer' ? 'system-notice danger' : 'system-notice success';
+      const title = ev.phase === 'analyzer' ? '系统：并行防无限思考分析已触发' : '系统：反无限思考重试已执行';
+      notice.innerHTML = `
+        <div class="system-notice-title">
+          <span>${title}</span>
+          ${ev.log_id ? `<span class="jump-raw-btn" onclick="jumpToRawLog(${ev.log_id})">[原始数据]</span>` : ''}
+        </div>
+        <div>${escapeHtml(ev.response ? (ev.response.analyzer_judgment || '') : '')}</div>
+      `;
+      body.appendChild(notice);
+    }
+  });
+
+  header.addEventListener('click', () => {
+    const isVisible = body.style.display !== 'none';
+    body.style.display = isVisible ? 'none' : '';
+    header.querySelector('span').textContent = (isVisible ? '▶' : '▼') + header.querySelector('span').textContent.slice(1);
+  });
+
+  container.appendChild(header);
+  container.appendChild(body);
+  return container;
+}
+
+// createStepDOM 渲染单个 InteractionStep
+function createStepDOM(sessionId, step) {
+  const node = document.createElement('div');
+  node.style.cssText = 'margin-bottom: 8px;';
+
+  switch (step.kind) {
+    case 'user_message': {
+      node.className = 'yorha-msg-bubble user';
+      node.innerHTML = `
+        <div class="bubble-meta"><span>用户</span></div>
+        ${genRefCollapsibleHtml(step.preview || '(空内容)', step.content_ref, sessionId, 'content')}
+      `;
+      break;
+    }
+    case 'assistant_thinking': {
+      const rLen = step.reasoning_preview ? step.reasoning_preview.length : 0;
+      node.innerHTML = `
+        <div class="log-chip" data-session-id="${escapeHtml(sessionId)}" data-ref="${escapeHtml(encodeContentRef(step.reasoning_ref))}" data-preview="${escapeHtml(step.reasoning_preview || '')}">
+          <div class="log-chip-title" onclick="toggleRefChip(this)">🤔 DEEPSEEK THINKING PATH${step.duration_ms ? ' (' + (step.duration_ms >= 1000 ? (step.duration_ms/1000).toFixed(1)+'s' : step.duration_ms+'ms') + ')' : ''}${rLen ? ' ' + rLen + '字' : ''} (点击展开/折叠)</div>
+          <div class="log-chip-content" style="white-space:pre-wrap;"></div>
+        </div>
+      `;
+      break;
+    }
+    case 'tool_call': {
+      const tc = { name: step.tool_name, input: step.tool_input, id: step.tool_use_id };
+      const ref = step.tool_input_ref || null;
+      node.innerHTML = `
+        <div style="padding: 6px 8px; border-left: 3px solid var(--yorha-accent); background: rgba(0,0,0,0.04); border-radius: 0 3px 3px 0;">
+          <div style="font-weight:600; font-size:11px; color: var(--yorha-accent); margin-bottom: 4px;">🔧 工具调用</div>
+          ${renderToolCallCard(tc, ref, sessionId)}
+        </div>
+      `;
+      break;
+    }
+    case 'tool_result': {
+      const lenStr = step.preview ? step.preview.length + '字' : '';
+      const pairedHint = step.paired_tool_call_id ? ' [已配对]' : '';
+      node.className = 'system-notice success';
+      node.style.cssText = 'border-color: var(--yorha-accent); background: rgba(205,90,63,0.03); margin-bottom: 8px;';
+      node.innerHTML = `
+        <div class="system-notice-title" style="color:var(--yorha-accent)">
+          <span>📎 工具结果 (Tool Result)${lenStr ? ' ' + lenStr : ''}${pairedHint}</span>
+        </div>
+        ${genRefCollapsibleHtml(step.preview || '(空内容)', step.content_ref, sessionId, 'tool_result')}
+      `;
+      break;
+    }
+    case 'assistant_reply': {
+      node.className = 'yorha-msg-bubble assistant';
+      const durHint = step.duration_ms ? `<span style="color:var(--yorha-fg-dim); font-size:10px;">${step.duration_ms >= 1000 ? (step.duration_ms/1000).toFixed(1)+'s' : step.duration_ms+'ms'}</span>` : '';
+      node.innerHTML = `
+        <div class="bubble-meta"><span>🤖 AI 响应</span> ${durHint}</div>
+        ${genRefCollapsibleHtml(step.preview || '(空内容)', step.content_ref, sessionId, 'content')}
+      `;
+      break;
+    }
+    default:
+      return document.createComment('unknown step kind: ' + step.kind);
+  }
+  return node;
+}
+
+function createTimelineItemDOM(sessionId, item) {
+  if (item.type === 'event') {
+    const notice = document.createElement('div');
+    notice.className = item.phase === 'analyzer' ? 'system-notice danger' : 'system-notice success';
+    const title = item.phase === 'analyzer' ? '系统：并行防无限思考分析已触发' : '系统：反无限思考重试已执行';
+    notice.innerHTML = `
+      <div class="system-notice-title">
+        <span>${title}</span>
+        ${item.log_id ? `<span class="jump-raw-btn" onclick="jumpToRawLog(${item.log_id})">[原始数据]</span>` : ''}
+      </div>
+      <div>${escapeHtml(item.preview || '')}</div>
+    `;
+    return notice;
+  }
+
+  const role = item.role || 'user';
+  const isAssistant = role === 'assistant';
+  const isTool = role === 'tool';
+
+  let isPureToolCall = false;
+  if (isAssistant && item.tool_calls && item.tool_calls.length > 0) {
+    const joinedTools = item.tool_calls.join('\n');
+    if (!item.preview || item.preview === joinedTools) {
+      isPureToolCall = true;
+    }
+  }
+
+  const node = document.createElement('div');
+  const useNoticeStyle = isTool || isPureToolCall;
+  node.className = useNoticeStyle ? 'system-notice success' : `yorha-msg-bubble ${isAssistant ? 'assistant' : 'user'}`;
+  if (useNoticeStyle) {
+    node.style.borderColor = 'var(--yorha-accent)';
+    node.style.background = 'rgba(205,90,63,0.03)';
+  }
+
+  let roleName = '用户';
+  if (role === 'system') {
+    roleName = '系统 (System)';
+  } else if (isTool) {
+    roleName = '工具返回内容 (Tool Result)';
+  } else if (isPureToolCall) {
+    roleName = '调用工具内容 (Tool Call)';
+  } else if (isAssistant) {
+    roleName = 'AI 响应';
+  }
+
+  const contentField = isTool ? 'tool_result' : 'content';
+  let bodyHtml = '';
+
+  if (isAssistant) {
+    let reasoningHtml = '';
+    if (item.reasoning_content) {
+      reasoningHtml = `
+        <div class="log-chip">
+          <div class="log-chip-title" onclick="const content = this.nextElementSibling; content.style.display = content.style.display === 'none' ? 'block' : 'none';">🤔 DEEPSEEK THINKING PATH (点击展开/折叠)</div>
+          <div class="log-chip-content" style="display:none; white-space:pre-wrap;">${escapeHtml(item.reasoning_content)}</div>
+        </div>
+      `;
+    }
+
+    if (isPureToolCall) {
+      const toolHtml = item.tool_calls.map(tc => renderLocalToolCallCard(tc)).join('');
+      bodyHtml = reasoningHtml + `
+        <div style="margin-top:6px;">
+          ${toolHtml}
+        </div>
+      `;
+    } else {
+      let textHtml = '';
+      if (!item.preview) {
+        textHtml = `<div style="color:var(--yorha-fg-dim); font-style:italic;">仅包含思考或工具调用，无文本输出</div>`;
+      } else {
+        textHtml = genLocalCollapsibleHtml(item.preview, contentField);
+      }
+
+      let toolHtml = '';
+      if (item.tool_calls && item.tool_calls.length > 0) {
+        const cards = item.tool_calls.map(tc => renderLocalToolCallCard(tc)).join('');
+        toolHtml = `
+          <div style="margin-bottom:10px; padding: 10px; border-left: 3px solid var(--yorha-accent); background: rgba(0,0,0,0.05);">
+            <div style="font-weight:600; font-size:11px; color: var(--yorha-accent); margin-bottom: 4px;">工具调用 (Tool Call)</div>
+            ${cards}
+          </div>
+        `;
+      }
+      bodyHtml = reasoningHtml + toolHtml + textHtml;
+    }
+  } else {
+    bodyHtml = genLocalCollapsibleHtml(item.preview || '', contentField);
+  }
+
+  // 构造工具加载标签及列表面板
+  let toolsBadgeHtml = '';
+  let toolsPanelHtml = '';
+  if (role === 'user' && item.tools && item.tools.length > 0) {
+    toolsBadgeHtml = `<span class="badge" style="margin-left: 8px; cursor: pointer; background: var(--yorha-accent); color: #fff; padding: 1px 6px; font-size: 10px; font-weight: bold; border-radius: 2px;" onclick="const panel = this.closest('.yorha-msg-bubble').querySelector('.yorha-tools-panel'); panel.style.display = panel.style.display === 'none' ? 'block' : 'none';">调用工具：${item.tools.length}</span>`;
+    
+    const toolItemsHtml = item.tools.map(tool => `
+      <div class="yorha-tool-item" style="margin-bottom: 6px;">
+        <div class="yorha-tool-name" style="font-weight: bold; cursor: pointer; color: var(--yorha-accent); font-size: 11px; font-family: monospace;" onclick="const desc = this.nextElementSibling; desc.style.display = desc.style.display === 'none' ? 'block' : 'none';">
+          • ${escapeHtml(tool.name)}
+        </div>
+        <div class="yorha-tool-desc" style="display: none; margin-left: 12px; margin-top: 2px; font-size: 11px; color: var(--yorha-fg-dim); white-space: pre-wrap; font-family: monospace; border-left: 1px dashed var(--yorha-border); padding-left: 6px;">
+          ${escapeHtml(tool.description || '暂无工具描述')}
+        </div>
+      </div>
+    `).join('');
+
+    toolsPanelHtml = `
+      <div class="yorha-tools-panel" style="display: none; margin: 8px 0; padding: 8px; border: 1px dashed var(--yorha-accent); border-radius: 3px; background: rgba(205,90,63,0.02);">
+        <div style="font-size: 10px; color: var(--yorha-fg-dim); margin-bottom: 6px; font-weight: bold; text-transform: uppercase;">加载的可用工具列表 (可用 Tools)</div>
+        ${toolItemsHtml}
+      </div>
+    `;
+  }
+
+  node.innerHTML = `
+    <div class="${useNoticeStyle ? 'system-notice-title' : 'bubble-meta'}" ${useNoticeStyle ? 'style="color:var(--yorha-accent)"' : ''}>
+      <span>${roleName}</span>
+      ${toolsBadgeHtml}
+    </div>
+    ${toolsPanelHtml}
+    ${bodyHtml}
+  `;
+  return node;
+}
+
+function genLocalCollapsibleHtml(text, field = 'content') {
+  const safeText = escapeHtml(text || '(空内容)');
+  const isTool = field === 'tool_calls' || field === 'tool_result';
+  const limit = isTool ? 200 : 300;
+  const contentStyle = isTool ? 'font-family:monospace; font-size:11px; word-break:break-all;' : '';
+  const contentClass = isTool ? '' : 'yorha-msg-content';
+  if (text.length <= limit) {
+    return `<div class="${contentClass}" style="white-space:pre-wrap; ${contentStyle}">${safeText}</div>`;
+  }
+  const shortText = escapeHtml(text.substring(0, limit));
+  const labelStyle = 'color: var(--yorha-accent); font-weight: bold; cursor: pointer; display: block; margin-top: 6px;';
+  return `
+    <div class="collapsible-text-container" style="${contentStyle}">
+      <div class="text-collapsed">
+        <div class="${contentClass}" style="white-space:pre-wrap; ${contentStyle}">${shortText}...</div>
+        <span style="${labelStyle}" onclick="this.parentElement.style.display='none'; this.parentElement.nextElementSibling.style.display='block';">[ 展 开 ]</span>
+      </div>
+      <div class="text-expanded" style="display:none;">
+        <div class="${contentClass}" style="white-space:pre-wrap; ${contentStyle}">${safeText}</div>
+        <span style="${labelStyle}" onclick="this.parentElement.style.display='none'; this.parentElement.previousElementSibling.style.display='block';">[ 收 起 ]</span>
+      </div>
+    </div>
+  `;
+}
+
+function renderLocalToolCallCard(tc) {
+  return `
+    <div style="padding: 6px 8px; margin-top:4px; background: rgba(0,0,0,0.04); border: 1px solid var(--yorha-border); border-radius: 3px;">
+      <div style="font-family:monospace; font-size:11px; color:var(--yorha-accent); word-break:break-all;">${escapeHtml(tc)}</div>
+    </div>
+  `;
+}
+
+// ── 渲染会话诊断的时间线对话气泡 ──
+function renderChatTimeline(turns) {
+  window._currentTimelineTurns = turns; // 暂存全局
+  const timeline = $('chatTimeline');
+  timeline.innerHTML = '';
+
+  const tids = Object.keys(turns).map(Number).sort((a,b) => a - b);
+  tids.forEach(tid => {
+    const turn = turns[tid];
+
+    if (turn.chat_history && turn.chat_history.length > 0) {
+      turn.chat_history.forEach((msg, mIdx) => {
+        if (msg.role === 'user' || msg.role === 'system') {
+          const uBubble = document.createElement('div');
+          uBubble.className = 'yorha-msg-bubble user';
+          let roleName = msg.role === 'system' ? '系统 (System)' : '用户';
+          
+          const txt = msg.content || '(空内容)';
+          let bodyHtml = genCollapsibleHtml(txt, tid, 'content', mIdx);
+          
+          let contentHtml = `
+            <div class="bubble-meta">
+              <span>${roleName}</span>
+            </div>
+            ${bodyHtml}
+          `;
+
+          const isLastUser = (msg.role === 'user' && !turn.chat_history.slice(mIdx + 1).some(m => m.role === 'user'));
+          if (isLastUser && (turn.system_modified || turn.extra_injected)) {
+            const primaryEvent = turn.events.find(e => e.phase === 'primary');
+            
+            let detailsHtml = "";
+            if (turn.system_modified) detailsHtml += "• System Prompt 拼接位置已重组优化\n";
+            if (turn.extra_injected) detailsHtml += "• 注入了额外定义的最高优先级指令\n";
+            if (primaryEvent && primaryEvent.request) {
+              detailsHtml += `\n[配置快照]:\n- 思考模式: ${primaryEvent.request.thinking_mode || '默认'}\n- 推理强度: ${primaryEvent.request.reasoning_effort || '默认'}\n- MaxTokens: ${primaryEvent.request.max_tokens || '不限制'}`;
+            }
+
+            contentHtml += `
+              <div class="log-chip">
+                <div class="log-chip-title" onclick="toggleChip(this)">SYSTEM OPTIMIZATION</div>
+                <div class="log-chip-content" style="white-space:pre-wrap;">${escapeHtml(detailsHtml)}</div>
+              </div>
+            `;
+          }
+
+          uBubble.innerHTML = contentHtml;
+          timeline.appendChild(uBubble);
+
+        } else if (msg.role === 'tool') {
+          const notice = document.createElement('div');
+          notice.className = 'system-notice success';
+          notice.style.borderColor = 'var(--yorha-accent)';
+          notice.style.background = 'rgba(205,90,63,0.03)';
+          
+          const rawStr = msg.content || '';
+          let resultBodyHtml = genCollapsibleHtml(rawStr, tid, 'content', mIdx);
+
+          notice.innerHTML = `<div class="system-notice-title" style="color:var(--yorha-accent)"><span>工具返回内容 (Tool Result)</span></div>${resultBodyHtml}`;
+          timeline.appendChild(notice);
+
+        } else if (msg.role === 'assistant') {
+          const hasTools = msg.tool_calls && msg.tool_calls.length > 0;
+          const hasContent = !!msg.content;
+          
+          const primaryEvent = turn.events.find(e => e.phase === 'primary');
+          const logId = primaryEvent ? primaryEvent.log_id : 0;
+
+          if (hasTools && !hasContent) {
+            const notice = document.createElement('div');
+            notice.className = 'system-notice success';
+            notice.style.borderColor = 'var(--yorha-accent)';
+            notice.style.background = 'rgba(205,90,63,0.03)';
+            
+            let contentHtml = `
+              <div class="system-notice-title" style="color:var(--yorha-accent); display:flex; justify-content:space-between; align-items:center;">
+                <span>调用工具内容 (Tool Call)</span>
+                ${logId ? `<span class="jump-raw-btn" onclick="jumpToRawLog(${logId})" style="margin-left:auto;">[原始数据]</span>` : ''}
+              </div>
+            `;
+            
+            if (msg.reasoning_content) {
+              const rLen = msg.reasoning_content.length;
+              contentHtml += `
+                <div class="log-chip" data-turn-id="${tid}" data-field="reasoning_content" data-history-idx="${mIdx}">
+                  <div class="log-chip-title" onclick="toggleChip(this)">DEEPSEEK THINKING PATH (点击展开/折叠 ${rLen} 字)</div>
+                  <div class="log-chip-content" style="white-space:pre-wrap;"></div>
+                </div>
+              `;
+            }
+            
+            const toolRefs = msg.tool_call_refs || [];
+            const toolCallBodyHtml = msg.tool_calls.map((tc, idx) => {
+              const ref = toolRefs[idx] || null;
+              return renderToolCallCard(tc, ref, currentSessionId);
+            }).join('');
+            
+            contentHtml += `<div style="margin-top:6px;">${toolCallBodyHtml}</div>`;
+            notice.innerHTML = contentHtml;
+            timeline.appendChild(notice);
+          } else {
+            const aBubble = document.createElement('div');
+            aBubble.className = 'yorha-msg-bubble assistant';
+            
+            let contentHtml = `
+              <div class="bubble-meta">
+                <span>AI 响应</span>
+                ${logId ? `<span class="jump-raw-btn" onclick="jumpToRawLog(${logId})">[原始数据]</span>` : ''}
+              </div>
+            `;
+
+            if (msg.reasoning_content) {
+              const rLen = msg.reasoning_content.length;
+              contentHtml += `
+                <div class="log-chip" data-turn-id="${tid}" data-field="reasoning_content" data-history-idx="${mIdx}">
+                  <div class="log-chip-title" onclick="toggleChip(this)">DEEPSEEK THINKING PATH (点击展开/折叠 ${rLen} 字)</div>
+                  <div class="log-chip-content" style="white-space:pre-wrap;"></div>
+                </div>
+              `;
+            }
+
+            if (hasTools) {
+              const toolRefs = msg.tool_call_refs || [];
+              const toolCallBodyHtml = msg.tool_calls.map((tc, idx) => {
+                const ref = toolRefs[idx] || null;
+                return renderToolCallCard(tc, ref, currentSessionId);
+              }).join('');
+              contentHtml += `<div style="margin-bottom:10px; padding: 10px; border-left: 3px solid var(--yorha-accent); background: rgba(0,0,0,0.05);"><div style="font-weight:600; font-size:11px; color: var(--yorha-accent); margin-bottom: 4px;">工具调用 (Tool Call)</div>${toolCallBodyHtml}</div>`;
+            }
+
+            if (msg.content) {
+              const txt = msg.content;
+              let bodyHtml = genCollapsibleHtml(txt, tid, 'content', mIdx);
+              contentHtml += bodyHtml;
+            } else {
+              contentHtml += `<div style="color:var(--yorha-fg-dim); font-style:italic;">仅包含思考或工具调用，无文本输出</div>`;
+            }
+
+            aBubble.innerHTML = contentHtml;
+            timeline.appendChild(aBubble);
+          }
+        }
+      });
+
+      turn.events.forEach(ev => {
+        if (ev.phase === 'analyzer') {
+          const notice = document.createElement('div');
+          notice.className = 'system-notice danger';
+          notice.innerHTML = `
+            <div class="system-notice-title">
+              <span>系统：并行防无限思考分析已触发</span>
+              <span class="jump-raw-btn" onclick="jumpToRawLog(${ev.log_id})">[原始数据]</span>
+            </div>
+            <div>检测到模型可能陷入无限思考（完成状态: <b>${ev.response.finish_reason}</b>）。<br>分析器判定：<b>${ev.response.analyzer_judgment}</b></div>
+          `;
+          timeline.appendChild(notice);
+        } else if (ev.phase === 'retry') {
+          const notice = document.createElement('div');
+          notice.className = 'system-notice success';
+          notice.innerHTML = `
+            <div class="system-notice-title">
+              <span>系统：反无限思考重试已执行</span>
+              <span class="jump-raw-btn" onclick="jumpToRawLog(${ev.log_id})">[原始数据]</span>
+            </div>
+            <div>代理已强制重新整理思路并进行二次重试。使用模型：<b>${ev.response.retry_model}</b>，耗时: <b>${ev.latency_ms}ms</b>，重试状态：<b>${ev.response.finish_reason}</b></div>
+          `;
+          timeline.appendChild(notice);
+        }
+      });
+
+    } else {
+      // 兼容旧的 session
+      if (turn.user_message) {
+        const uBubble = document.createElement('div');
+        uBubble.className = 'yorha-msg-bubble user';
+        
+        const txt = turn.user_message;
+        let bodyHtml = genCollapsibleHtml(txt, tid, 'user_message');
+        
+        let contentHtml = `
+          <div class="bubble-meta">
+            <span>用户 (轮次 #${turn.turn_id})</span>
+          </div>
+          ${bodyHtml}
+        `;
+
+        if (turn.system_modified || turn.extra_injected) {
+          const primaryEvent = turn.events.find(e => e.phase === 'primary');
+          
+          let detailsHtml = "";
+          if (turn.system_modified) detailsHtml += "• System Prompt 拼接位置已重组优化\n";
+          if (turn.extra_injected) detailsHtml += "• 注入了额外定义的最高优先级指令\n";
+          if (primaryEvent && primaryEvent.request) {
+            detailsHtml += `\n[配置快照]:\n- 思考模式: ${primaryEvent.request.thinking_mode || '默认'}\n- 推理强度: ${primaryEvent.request.reasoning_effort || '默认'}\n- MaxTokens: ${primaryEvent.request.max_tokens || '不限制'}`;
+          }
+
+          contentHtml += `
+            <div class="log-chip">
+              <div class="log-chip-title" onclick="toggleChip(this)">SYSTEM OPTIMIZATION</div>
+              <div class="log-chip-content" style="white-space:pre-wrap;">${escapeHtml(detailsHtml)}</div>
+            </div>
+          `;
+        }
+
+        uBubble.innerHTML = contentHtml;
+        timeline.appendChild(uBubble);
+      }
+
+      turn.events.forEach(ev => {
+        if (ev.phase === 'analyzer') {
+          const notice = document.createElement('div');
+          notice.className = 'system-notice danger';
+          notice.innerHTML = `
+            <div class="system-notice-title">
+              <span>系统：并行防无限思考分析已触发</span>
+              <span class="jump-raw-btn" onclick="jumpToRawLog(${ev.log_id})">[原始数据]</span>
+            </div>
+            <div>检测到模型可能陷入无限思考（完成状态: <b>${ev.response.finish_reason}</b>）。<br>分析器判定：<b>${ev.response.analyzer_judgment}</b></div>
+          `;
+          timeline.appendChild(notice);
+        } else if (ev.phase === 'retry') {
+          const notice = document.createElement('div');
+          notice.className = 'system-notice success';
+          notice.innerHTML = `
+            <div class="system-notice-title">
+              <span>系统：反无限思考重试已执行</span>
+              <span class="jump-raw-btn" onclick="jumpToRawLog(${ev.log_id})">[原始数据]</span>
+            </div>
+            <div>代理已强制重新整理思路并进行二次重试。使用模型：<b>${ev.response.retry_model}</b>，耗时: <b>${ev.latency_ms}ms</b>，重试状态：<b>${ev.response.finish_reason}</b></div>
+          `;
+          timeline.appendChild(notice);
+        }
+      });
+
+      if (turn.assistant_response || turn.reasoning_content || (turn.tool_calls && turn.tool_calls.length > 0)) {
+        const hasTools = turn.tool_calls && turn.tool_calls.length > 0;
+        const hasContent = !!turn.assistant_response;
+        
+        const primaryEvent = turn.events.find(e => e.phase === 'primary');
+        const logId = primaryEvent ? primaryEvent.log_id : 0;
+
+        if (hasTools && !hasContent) {
+          const notice = document.createElement('div');
+          notice.className = 'system-notice success';
+          notice.style.borderColor = 'var(--yorha-accent)';
+          notice.style.background = 'rgba(205,90,63,0.03)';
+          
+          let contentHtml = `
+            <div class="system-notice-title" style="color:var(--yorha-accent); display:flex; justify-content:space-between; align-items:center;">
+              <span>调用工具内容 (Tool Call)</span>
+              ${logId ? `<span class="jump-raw-btn" onclick="jumpToRawLog(${logId})" style="margin-left:auto;">[原始数据]</span>` : ''}
+            </div>
+          `;
+          
+          if (turn.reasoning_content) {
+            const rLen = turn.reasoning_content.length;
+            contentHtml += `
+              <div class="log-chip" data-turn-id="${tid}" data-field="reasoning_content">
+                <div class="log-chip-title" onclick="toggleChip(this)">DEEPSEEK THINKING PATH (点击展开/折叠 ${rLen} 字)</div>
+                <div class="log-chip-content" style="white-space:pre-wrap;"></div>
+              </div>
+            `;
+          }
+          
+          const toolRefs = turn.tool_call_refs || [];
+          const toolCallBodyHtml = turn.tool_calls.map((tc, idx) => {
+            const ref = toolRefs[idx] || null;
+            return renderToolCallCard(tc, ref, currentSessionId);
+          }).join('');
+          
+          contentHtml += `<div style="margin-top:6px;">${toolCallBodyHtml}</div>`;
+          notice.innerHTML = contentHtml;
+          timeline.appendChild(notice);
+        } else {
+          const aBubble = document.createElement('div');
+          aBubble.className = 'yorha-msg-bubble assistant';
+          
+          let contentHtml = `
+            <div class="bubble-meta">
+              <span>AI 响应</span>
+              ${logId ? `<span class="jump-raw-btn" onclick="jumpToRawLog(${logId})">[原始数据]</span>` : ''}
+            </div>
+          `;
+
+          if (turn.reasoning_content) {
+            const rLen = turn.reasoning_content.length;
+            contentHtml += `
+              <div class="log-chip" data-turn-id="${tid}" data-field="reasoning_content">
+                <div class="log-chip-title" onclick="toggleChip(this)">DEEPSEEK THINKING PATH (点击展开/折叠 ${rLen} 字)</div>
+                <div class="log-chip-content" style="white-space:pre-wrap;"></div>
+              </div>
+            `;
+          }
+
+          if (hasTools) {
+            const toolRefs = turn.tool_call_refs || [];
+            const toolCallBodyHtml = turn.tool_calls.map((tc, idx) => {
+              const ref = toolRefs[idx] || null;
+              return renderToolCallCard(tc, ref, currentSessionId);
+            }).join('');
+            contentHtml += `<div style="margin-bottom:10px; padding: 10px; border-left: 3px solid var(--yorha-accent); background: rgba(0,0,0,0.05);"><div style="font-weight:600; font-size:11px; color: var(--yorha-accent); margin-bottom: 4px;">工具调用 (Tool Call)</div>${toolCallBodyHtml}</div>`;
+          }
+
+          if (turn.assistant_response) {
+            const txt = turn.assistant_response;
+            let bodyHtml = genCollapsibleHtml(txt, tid, 'assistant_response');
+            contentHtml += bodyHtml;
+          } else {
+            contentHtml += `<div style="color:var(--yorha-fg-dim); font-style:italic;">仅包含思考或工具调用，无文本输出</div>`;
+          }
+
+          aBubble.innerHTML = contentHtml;
+          timeline.appendChild(aBubble);
+        }
+      }
+    }
+  });
+}
+
+function toggleChip(header) {
+  const parent = header.parentElement;
+  if (parent) {
+    const isOpen = parent.classList.toggle('open');
+    const contentEl = parent.querySelector('.log-chip-content');
+    if (contentEl && parent.dataset.turnId) {
+      if (isOpen) {
+        const tid = parseInt(parent.dataset.turnId);
+        const field = parent.dataset.field;
+        const hIdx = parent.dataset.historyIdx !== undefined ? parseInt(parent.dataset.historyIdx) : -1;
+        const text = getTimelineText(tid, field, hIdx);
+        contentEl.textContent = text;
+      } else {
+        contentEl.textContent = '';
+      }
+    }
+  }
+}
+
+function getTimelineText(tid, field, hIdx) {
+  const turns = window._currentTimelineTurns;
+  if (!turns) return "";
+  const turn = turns[tid];
+  if (!turn) return "";
+
+  if (hIdx >= 0 && turn.chat_history && turn.chat_history[hIdx]) {
+    const msg = turn.chat_history[hIdx];
+    if (field === 'content') return msg.content || "";
+    if (field === 'reasoning_content') return msg.reasoning_content || "";
+    if (field === 'tool_calls') return formatToolCallsText(msg.tool_calls);
+  }
+
+  if (field === 'user_message') return turn.user_message || "";
+  if (field === 'assistant_response') return turn.assistant_response || "";
+  if (field === 'reasoning_content') return turn.reasoning_content || "";
+  if (field === 'tool_calls') return formatToolCallsText(turn.tool_calls);
+
+  return "";
+}
+
+// 把 ToolCall 数组格式化为可读文本（每个工具一段，参数美化 JSON）
+function formatToolCallsText(toolCalls) {
+  if (!toolCalls || !toolCalls.length) return "";
+  return toolCalls.map(tc => {
+    if (typeof tc === 'string') return tc;
+    let inputPretty = '';
+    if (tc.input) {
+      try { inputPretty = JSON.stringify(JSON.parse(tc.input), null, 2); }
+      catch(e) { inputPretty = tc.input; }
+    }
+    const idSuffix = tc.id ? `  [id: ${tc.id}]` : '';
+    return `${tc.name || '(未知)'}${idSuffix}\n${inputPretty}`;
+  }).join('\n\n');
+}
+
+function genCollapsibleHtml(text, turnId, field, historyIdx = -1) {
+  const isHistory = historyIdx >= 0;
+  const isTool = field === 'tool_calls' || field === 'tool_result';
+  const limit = isTool ? 200 : 300;
+  
+  if (text.length <= limit) {
+    if (isTool) {
+      return `<div style="font-family:monospace; font-size:11px; white-space:pre-wrap; word-break:break-all;">${escapeHtml(text)}</div>`;
+    }
+    return `<div class="yorha-msg-content">${escapeHtml(text)}</div>`;
+  }
+  
+  const shortText = text.substring(0, limit);
+  const dataAttrs = `data-turn-id="${turnId}" data-field="${field}" ${isHistory ? `data-history-idx="${historyIdx}"` : ''}`;
+  const contentStyle = isTool ? 'font-family:monospace; font-size:11px; word-break:break-all;' : '';
+  const labelStyle = isTool ? 'font-weight: bold; font-size: 10px;' : 'color: var(--yorha-accent); font-weight: bold;';
+  
+  return `
+    <div class="collapsible-text-container" style="cursor: pointer; ${contentStyle}" ${dataAttrs} onclick="toggleTextCollapse(this, event)">
+      <div class="text-collapsed">
+        <div class="${isTool ? '' : 'yorha-msg-content'}" style="white-space:pre-wrap;">${escapeHtml(shortText)}...</div>
+        <span style="${labelStyle} display: block; margin-top: 6px;">[ 展 开 ]</span>
+      </div>
+    </div>
+  `;
+}
+
+function exportSessionMarkdown() {
+  if (!currentSessionId) return;
+  window.open(`/api/analysis/sessions/${currentSessionId}/export.md`);
+}
+
+async function jumpToRawLog(logId) {
+  if (!logId) return;
+  const dashboardTab = document.querySelector('.yorha-nav button[data-page="dashboard"]');
+  if (dashboardTab) {
+    dashboardTab.click();
+  }
+  let exists = logs.some(l => l.id === logId);
+  if (!exists) {
+    await loadLogs();
+  }
+  showDetail(logId);
+}
+
+// ── 数字微调步进器 ──
+function stepValue(inputId, delta, min, max) {
+  const el = document.getElementById(inputId);
+  if (!el) return;
+  let val = parseInt(el.value) || 0;
+  val += delta;
+  if (min !== undefined && val < min) val = min;
+  if (max !== undefined && val > max) val = max;
+  el.value = val;
+  el.dispatchEvent(new Event('change'));
+}
+
+// ── 寄叶自定义模拟下拉组件转换 ──
+function convertSelectsToYorha() {
+  const selects = document.querySelectorAll('#settings select');
+  selects.forEach(select => {
+    // 如果之前已经转过，我们先清理掉以支持重新回填
+    let wrapper = select.parentElement;
+    if (wrapper && wrapper.classList.contains('yorha-select-wrapper')) {
+      const trigger = wrapper.querySelector('.yorha-select-trigger');
+      const optionsContainer = wrapper.querySelector('.yorha-select-options');
+      if (trigger) trigger.remove();
+      if (optionsContainer) optionsContainer.remove();
+      // 把 select 移出来并放回原处，然后删除包装
+      wrapper.parentNode.insertBefore(select, wrapper);
+      wrapper.remove();
+    }
+
+    select.style.display = 'none';
+
+    wrapper = document.createElement('div');
+    wrapper.className = 'yorha-select-wrapper';
+    
+    select.parentNode.insertBefore(wrapper, select);
+    wrapper.appendChild(select);
+
+    const trigger = document.createElement('div');
+    trigger.className = 'yorha-select-trigger';
+    const updateTriggerText = () => {
+      const selectedOption = select.options[select.selectedIndex];
+      trigger.textContent = selectedOption ? selectedOption.textContent : '';
+    };
+    updateTriggerText();
+    wrapper.appendChild(trigger);
+
+    const optionsContainer = document.createElement('div');
+    optionsContainer.className = 'yorha-select-options';
+    wrapper.appendChild(optionsContainer);
+
+    const rebuildOptions = () => {
+      optionsContainer.innerHTML = '';
+      Array.from(select.options).forEach((opt, idx) => {
+        const item = document.createElement('div');
+        item.className = 'yorha-select-option-item';
+        if (idx === select.selectedIndex) {
+          item.classList.add('selected');
+        }
+        item.textContent = opt.textContent;
+        item.addEventListener('click', (e) => {
+          e.stopPropagation();
+          select.selectedIndex = idx;
+          updateTriggerText();
+          wrapper.classList.remove('open');
+          select.dispatchEvent(new Event('change'));
+        });
+        optionsContainer.appendChild(item);
+      });
+    };
+    rebuildOptions();
+
+    select.addEventListener('change', () => {
+      updateTriggerText();
+      Array.from(optionsContainer.children).forEach((child, idx) => {
+        if (idx === select.selectedIndex) {
+          child.classList.add('selected');
+        } else {
+          child.classList.remove('selected');
+        }
+      });
+    });
+
+    trigger.addEventListener('click', (e) => {
+      e.stopPropagation();
+      document.querySelectorAll('.yorha-select-wrapper').forEach(w => {
+        if (w !== wrapper) w.classList.remove('open');
+      });
+      wrapper.classList.toggle('open');
+    });
+  });
+
+  // 全局点击关闭所有下拉框
+  document.addEventListener('click', () => {
+    document.querySelectorAll('.yorha-select-wrapper').forEach(w => {
+      w.classList.remove('open');
+    });
+  });
+}
+
+// ── DOM 就绪时初始化 ──
+document.addEventListener('DOMContentLoaded', () => {
+  // 设置折叠联动初始处理
+  const binds = [
+    { trigger: 'cfgThinkingMode', target: 'effortGroup', type: 'select', cond: val => val === 'enabled' },
+    { trigger: 'cfgExtraPlacement', target: 'extraPromptGroup', type: 'select', cond: val => val !== 'none' },
+    { trigger: 'cfgMaxTokensMode', target: 'maxTokensCustomGroup', type: 'select', cond: val => val === 'custom' },
+    { trigger: 'cfgAntiLoop', target: 'antiloopSubSettings', type: 'checkbox', cond: checked => checked },
+    { trigger: 'cfgAntiloopRetryThinking', target: 'antiloopEffortGroup', type: 'select', cond: val => val === 'enabled' },
+    { trigger: 'cfgAnalysisEnabled', target: 'analysisSubSettings', type: 'checkbox', cond: checked => checked }
+  ];
+  binds.forEach(b => {
+    const trigEl = document.getElementById(b.trigger);
+    const targetEl = document.getElementById(b.target);
+    if (!trigEl || !targetEl) return;
+
+    const update = () => {
+      const show = b.type === 'select' ? b.cond(trigEl.value) : b.cond(trigEl.checked);
+      targetEl.style.display = show ? '' : 'none';
+    };
+
+    trigEl.addEventListener('change', update);
+    update();
+  });
+
+  // 主题实时联动
+  const themeSelect = document.getElementById('cfgTheme');
+  if (themeSelect) {
+    const applyLiveTheme = () => {
+      const selectedTheme = themeSelect.value;
+      document.body.className = 'theme-' + selectedTheme;
+    };
+    themeSelect.addEventListener('change', applyLiveTheme);
+  }
+});
+
+// ── 开始执行 ──
+loadLogs();
+setInterval(loadStatus, 5000);
+init();
+
+// ── 气泡文字折叠切换 ──
+function toggleTextCollapse(container, event) {
+  // 检查是否有选中的文本（拖拽框选）
+  if (window.getSelection() && window.getSelection().toString().trim() !== '') {
+    return;
+  }
+  // 检查点击防抖，如果鼠标位移大于 5 像素或按下时间超过 500ms，则判定为拖拽选择，不触发折叠
+  if (event) {
+    const moveX = Math.abs(event.clientX - lastMouseDownX);
+    const moveY = Math.abs(event.clientY - lastMouseDownY);
+    const duration = Date.now() - lastMouseDownTime;
+    if (moveX > 5 || moveY > 5 || duration > 500) {
+      return;
+    }
+  }
+
+  const tid = parseInt(container.dataset.turnId);
+  const field = container.dataset.field;
+  const hIdx = container.dataset.historyIdx !== undefined ? parseInt(container.dataset.historyIdx) : -1;
+  const isTool = field === 'tool_calls' || field === 'tool_result';
+  const limit = isTool ? 200 : 300;
+  
+  const fullText = getTimelineText(tid, field, hIdx);
+  const collapsedEl = container.querySelector('.text-collapsed');
+  
+  if (collapsedEl) {
+    const labelEl = collapsedEl.querySelector('span');
+    const contentInner = collapsedEl.querySelector('div');
+    const isExpanded = labelEl.textContent.includes('收 起');
+    
+    if (isExpanded) {
+      const shortText = fullText.substring(0, limit);
+      contentInner.textContent = shortText + "...";
+      labelEl.textContent = '[ 展 开 ]';
+    } else {
+      contentInner.textContent = fullText;
+      labelEl.textContent = '[ 收 起 ]';
+    }
+  }
+}
