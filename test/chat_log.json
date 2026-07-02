@@ -1,0 +1,42 @@
+[
+  {
+    "turn": 1,
+    "request": {
+      "max_tokens": 4096,
+      "messages": [
+        {
+          "content": "你好，请问你是谁？请简短回答。",
+          "role": "user"
+        }
+      ],
+      "model": "deepseek-v4-flash",
+      "reasoning_effort": "high",
+      "stream": true,
+      "thinking": {
+        "type": "enabled"
+      }
+    },
+    "response": {
+      "choices": [
+        {
+          "finish_reason": "stop",
+          "index": 0,
+          "message": {
+            "content": "你好，我是DeepSeek，由深度求索公司创造的AI助手。",
+            "reasoning_content": "我们被问到：\"你好，请问你是谁？请简短回答。\" 这是一个简单的自我介绍。作为AI助手，我应该简短地回答，比如我是DeepSeek，由深度求索公司创造的AI助手。但注意用户要求简短回答。所以回复应简洁。\n\n[意图校准] 用户现在关心的是：你好，请问你是谁？请简短回答。\n\n",
+            "role": "assistant"
+          }
+        }
+      ],
+      "created": 0,
+      "id": "mock-stream-id",
+      "model": "",
+      "object": "chat.completion",
+      "usage": {
+        "completion_tokens": 0,
+        "prompt_tokens": 0,
+        "total_tokens": 0
+      }
+    }
+  }
+]

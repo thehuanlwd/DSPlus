@@ -1735,6 +1735,20 @@ func detectSemanticType(data map[string]interface{}, format string) string {
 			hasToolResultMessage = true
 		}
 
+		// 检测 user 消息（Anthropic 格式下，工具回传结果包裹在 user 角色的 content 数组中）
+		if role == "user" {
+			if contentArr, ok := m["content"].([]interface{}); ok {
+				for _, part := range contentArr {
+					if pMap, ok := part.(map[string]interface{}); ok {
+						pType, _ := pMap["type"].(string)
+						if pType == "tool_result" {
+							hasToolResultMessage = true
+						}
+					}
+				}
+			}
+		}
+
 		// 检测 assistant 消息
 		if role == "assistant" {
 			// OpenAI 格式: tool_calls 字段

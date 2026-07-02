@@ -239,7 +239,7 @@ func (s *ProxyServer) writeAntiloopIndicator(w http.ResponseWriter, flusher http
 		},
 	}
 	b, _ := json.Marshal(chunk)
-	line := "data: " + string(b) + "\n"
+	line := "data: " + string(b) + "\n\n"
 	w.Write([]byte(line))
 	capture.Write([]byte(line))
 	if canFlush {
@@ -390,7 +390,7 @@ func (s *ProxyServer) streamHardLimitSSE(w http.ResponseWriter, flusher http.Flu
 		},
 	}
 	b, _ := json.Marshal(chunk)
-	line := "data: " + string(b) + "\n"
+	line := "data: " + string(b) + "\n\n"
 	w.Write([]byte(line))
 	capture.Write([]byte(line))
 	if canFlush {

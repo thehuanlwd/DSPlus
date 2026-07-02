@@ -1,0 +1,507 @@
+[
+  {
+    "turn": 1,
+    "request": {
+      "max_tokens": 4096,
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "请先读取 test/test.txt 文件的内容，然后在 test/test.txt 文件中编辑写入 'Hello World'，最后再次读取该文件内容以确认写入成功。",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "model": "deepseek-v4-flash",
+      "reasoning_effort": "high",
+      "stream": false,
+      "thinking": {
+        "type": "enabled"
+      },
+      "tools": [
+        {
+          "description": "读取指定路径的文件内容",
+          "input_schema": {
+            "properties": {
+              "path": {
+                "description": "文件路径",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          },
+          "name": "read_file"
+        },
+        {
+          "description": "向指定路径写入文件内容",
+          "input_schema": {
+            "properties": {
+              "content": {
+                "description": "要写入的内容",
+                "type": "string"
+              },
+              "path": {
+                "description": "文件路径",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ],
+            "type": "object"
+          },
+          "name": "write_file"
+        }
+      ]
+    },
+    "response": {
+      "content": [
+        {
+          "signature": "09c10831-d52b-4e30-abea-86b34a37d1f5",
+          "thinking": "用户要求我执行以下操作：\n1. 读取 test/test.txt 文件的内容\n2. 在 test/test.txt 文件中编辑写入 'Hello World'\n3. 再次读取该文件内容以确认写入成功\n\n我需要使用提供的工具来读取和写入文件。我将按顺序执行这些步骤。\n\n首先，读取 test/test.txt 文件的内容。",
+          "type": "thinking"
+        },
+        {
+          "id": "call_00_D5YbSwdz0v4j41LCo49O4607",
+          "input": {
+            "path": "test/test.txt"
+          },
+          "name": "read_file",
+          "type": "tool_use"
+        }
+      ],
+      "id": "09c10831-d52b-4e30-abea-86b34a37d1f5",
+      "model": "deepseek-v4-flash",
+      "role": "assistant",
+      "stop_reason": "tool_use",
+      "stop_sequence": null,
+      "type": "message",
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 384,
+        "input_tokens": 81,
+        "output_tokens": 119,
+        "service_tier": "standard"
+      }
+    }
+  },
+  {
+    "turn": 2,
+    "request": {
+      "max_tokens": 4096,
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "请先读取 test/test.txt 文件的内容，然后在 test/test.txt 文件中编辑写入 'Hello World'，最后再次读取该文件内容以确认写入成功。",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "id": "call_00_D5YbSwdz0v4j41LCo49O4607",
+              "input": {
+                "path": "test/test.txt"
+              },
+              "name": "read_file",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "这是 test.txt 初始内容。\n",
+              "tool_use_id": "call_00_D5YbSwdz0v4j41LCo49O4607",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "model": "deepseek-v4-flash",
+      "reasoning_effort": "high",
+      "stream": false,
+      "thinking": {
+        "type": "enabled"
+      },
+      "tools": [
+        {
+          "description": "读取指定路径的文件内容",
+          "input_schema": {
+            "properties": {
+              "path": {
+                "description": "文件路径",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          },
+          "name": "read_file"
+        },
+        {
+          "description": "向指定路径写入文件内容",
+          "input_schema": {
+            "properties": {
+              "content": {
+                "description": "要写入的内容",
+                "type": "string"
+              },
+              "path": {
+                "description": "文件路径",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ],
+            "type": "object"
+          },
+          "name": "write_file"
+        }
+      ]
+    },
+    "response": {
+      "content": [
+        {
+          "signature": "816bc93b-7d48-4090-9e50-19b1c123ebe5",
+          "thinking": "文件当前内容为 \"这是 test.txt 初始内容。\"。现在我需要将内容修改为 'Hello World'。我将使用 write_file 工具。",
+          "type": "thinking"
+        },
+        {
+          "id": "call_00_hgQilPlXcQehkMMdYMIo2311",
+          "input": {
+            "content": "Hello World",
+            "path": "test/test.txt"
+          },
+          "name": "write_file",
+          "type": "tool_use"
+        }
+      ],
+      "id": "816bc93b-7d48-4090-9e50-19b1c123ebe5",
+      "model": "deepseek-v4-flash",
+      "role": "assistant",
+      "stop_reason": "tool_use",
+      "stop_sequence": null,
+      "type": "message",
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 384,
+        "input_tokens": 219,
+        "output_tokens": 94,
+        "service_tier": "standard"
+      }
+    }
+  },
+  {
+    "turn": 3,
+    "request": {
+      "max_tokens": 4096,
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "请先读取 test/test.txt 文件的内容，然后在 test/test.txt 文件中编辑写入 'Hello World'，最后再次读取该文件内容以确认写入成功。",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "id": "call_00_D5YbSwdz0v4j41LCo49O4607",
+              "input": {
+                "path": "test/test.txt"
+              },
+              "name": "read_file",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "这是 test.txt 初始内容。\n",
+              "tool_use_id": "call_00_D5YbSwdz0v4j41LCo49O4607",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "id": "call_00_hgQilPlXcQehkMMdYMIo2311",
+              "input": {
+                "content": "Hello World",
+                "path": "test/test.txt"
+              },
+              "name": "write_file",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "文件写入成功",
+              "tool_use_id": "call_00_hgQilPlXcQehkMMdYMIo2311",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "model": "deepseek-v4-flash",
+      "reasoning_effort": "high",
+      "stream": false,
+      "thinking": {
+        "type": "enabled"
+      },
+      "tools": [
+        {
+          "description": "读取指定路径的文件内容",
+          "input_schema": {
+            "properties": {
+              "path": {
+                "description": "文件路径",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          },
+          "name": "read_file"
+        },
+        {
+          "description": "向指定路径写入文件内容",
+          "input_schema": {
+            "properties": {
+              "content": {
+                "description": "要写入的内容",
+                "type": "string"
+              },
+              "path": {
+                "description": "文件路径",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ],
+            "type": "object"
+          },
+          "name": "write_file"
+        }
+      ]
+    },
+    "response": {
+      "content": [
+        {
+          "signature": "0a6d586b-ffb4-4732-b5db-62f0e91be894",
+          "thinking": "写入成功。现在再次读取文件内容以确认。",
+          "type": "thinking"
+        },
+        {
+          "id": "call_00_nsisWMK74LHoGQ64LaAd4836",
+          "input": {
+            "path": "test/test.txt"
+          },
+          "name": "read_file",
+          "type": "tool_use"
+        }
+      ],
+      "id": "0a6d586b-ffb4-4732-b5db-62f0e91be894",
+      "model": "deepseek-v4-flash",
+      "role": "assistant",
+      "stop_reason": "tool_use",
+      "stop_sequence": null,
+      "type": "message",
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 640,
+        "input_tokens": 72,
+        "output_tokens": 57,
+        "service_tier": "standard"
+      }
+    }
+  },
+  {
+    "turn": 4,
+    "request": {
+      "max_tokens": 4096,
+      "messages": [
+        {
+          "content": [
+            {
+              "text": "请先读取 test/test.txt 文件的内容，然后在 test/test.txt 文件中编辑写入 'Hello World'，最后再次读取该文件内容以确认写入成功。",
+              "type": "text"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "id": "call_00_D5YbSwdz0v4j41LCo49O4607",
+              "input": {
+                "path": "test/test.txt"
+              },
+              "name": "read_file",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "这是 test.txt 初始内容。\n",
+              "tool_use_id": "call_00_D5YbSwdz0v4j41LCo49O4607",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "id": "call_00_hgQilPlXcQehkMMdYMIo2311",
+              "input": {
+                "content": "Hello World",
+                "path": "test/test.txt"
+              },
+              "name": "write_file",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "文件写入成功",
+              "tool_use_id": "call_00_hgQilPlXcQehkMMdYMIo2311",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        },
+        {
+          "content": [
+            {
+              "id": "call_00_nsisWMK74LHoGQ64LaAd4836",
+              "input": {
+                "path": "test/test.txt"
+              },
+              "name": "read_file",
+              "type": "tool_use"
+            }
+          ],
+          "role": "assistant"
+        },
+        {
+          "content": [
+            {
+              "content": "Hello World",
+              "tool_use_id": "call_00_nsisWMK74LHoGQ64LaAd4836",
+              "type": "tool_result"
+            }
+          ],
+          "role": "user"
+        }
+      ],
+      "model": "deepseek-v4-flash",
+      "reasoning_effort": "high",
+      "stream": false,
+      "thinking": {
+        "type": "enabled"
+      },
+      "tools": [
+        {
+          "description": "读取指定路径的文件内容",
+          "input_schema": {
+            "properties": {
+              "path": {
+                "description": "文件路径",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path"
+            ],
+            "type": "object"
+          },
+          "name": "read_file"
+        },
+        {
+          "description": "向指定路径写入文件内容",
+          "input_schema": {
+            "properties": {
+              "content": {
+                "description": "要写入的内容",
+                "type": "string"
+              },
+              "path": {
+                "description": "文件路径",
+                "type": "string"
+              }
+            },
+            "required": [
+              "path",
+              "content"
+            ],
+            "type": "object"
+          },
+          "name": "write_file"
+        }
+      ]
+    },
+    "response": {
+      "content": [
+        {
+          "signature": "d3c8cfed-243b-46af-9fb0-c9bf1d692dec",
+          "thinking": "确认文件内容已成功更改为 \"Hello World\"。现在我可以向用户报告结果。",
+          "type": "thinking"
+        },
+        {
+          "text": "已按步骤完成操作：\n\n1. **首次读取**：`test/test.txt` 的初始内容为 `\"这是 test.txt 初始内容。\"`。\n2. **写入操作**：已将内容编辑为 `Hello World`。\n3. **再次读取确认**：文件内容已成功更新为 `Hello World`。\n\n操作全部成功。",
+          "type": "text"
+        }
+      ],
+      "id": "d3c8cfed-243b-46af-9fb0-c9bf1d692dec",
+      "model": "deepseek-v4-flash",
+      "role": "assistant",
+      "stop_reason": "end_turn",
+      "stop_sequence": null,
+      "type": "message",
+      "usage": {
+        "cache_creation_input_tokens": 0,
+        "cache_read_input_tokens": 768,
+        "input_tokens": 15,
+        "output_tokens": 92,
+        "service_tier": "standard"
+      }
+    }
+  }
+]

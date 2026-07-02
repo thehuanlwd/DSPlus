@@ -1,3 +1,22 @@
 .\build.bat
 claude
 .\build.bat
+opencode -c
+.\build.bat
+opencode -c
+.\build.bat
+go run test/test_client.go --mode chat
+go run test/test_client.go --mode tool
+powershell -ExecutionPolicy Bypass -File test/run_suite.ps1
+go run test/test_triple_tools.go -format openai
+go run test/test_client.go --mode chat
+go run test/test_triple_tools.go -format openai
+.\build.bat
+go run test/test_triple_tools.go -format openai
+go run test/test_triple_tools.go -format anthropic
+go run test/test_client.go --mode chat
+.\build.bat
+go run test/test_client.go --mode chat
+.\build.bat
+go run test/test_client.go --mode chat
+.\build.bat

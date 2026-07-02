@@ -1,0 +1,363 @@
+[
+  {
+    "turn": 1,
+    "request": {
+      "messages": [
+        {
+          "content": "请先读取 test/test.txt 文件的内容，然后在 test/test.txt 文件中编辑写入 'Hello DeepSeek'。",
+          "role": "user"
+        }
+      ],
+      "model": "deepseek-v4-flash",
+      "reasoning_effort": "high",
+      "stream": false,
+      "thinking": {
+        "type": "enabled"
+      },
+      "tools": [
+        {
+          "function": {
+            "description": "读取指定路径的文件内容",
+            "name": "read_file",
+            "parameters": {
+              "properties": {
+                "path": {
+                  "description": "文件绝对路径或相对路径",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "function"
+        },
+        {
+          "function": {
+            "description": "向指定路径写入文件内容",
+            "name": "write_file",
+            "parameters": {
+              "properties": {
+                "content": {
+                  "description": "要写入的文件内容",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "文件绝对路径或相对路径",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "function"
+        }
+      ]
+    },
+    "response": {
+      "choices": [
+        {
+          "finish_reason": "tool_calls",
+          "index": 0,
+          "logprobs": null,
+          "message": {
+            "content": "",
+            "reasoning_content": "用户要求先读取 test/test.txt 文件的内容，然后再编辑写入 'Hello DeepSeek'。我需要先读取文件内容，然后再写入新内容。\n\n但要注意，用户说“请先读取 test/test.txt 文件的内容，然后在 test/test.txt 文件中编辑写入 'Hello DeepSeek'。”这意味着先读取当前内容，然后再写入新内容。\n\n我需要使用提供的工具：read_file 和 write_file。\n\n让我先读取文件内容。",
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{\"path\": \"test/test.txt\"}",
+                  "name": "read_file"
+                },
+                "id": "call_00_ASGHPkxDMsJ8ih045f929789",
+                "index": 0,
+                "type": "function"
+              }
+            ]
+          }
+        }
+      ],
+      "created": 1782972331,
+      "id": "86e6659f-f5a2-48cb-954c-68eaafa9169f",
+      "model": "deepseek-v4-flash",
+      "object": "chat.completion",
+      "system_fingerprint": "fp_8b330d02d0_prod0820_fp8_kvcache_20260402",
+      "usage": {
+        "completion_tokens": 138,
+        "completion_tokens_details": {
+          "reasoning_tokens": 92
+        },
+        "prompt_cache_hit_tokens": 384,
+        "prompt_cache_miss_tokens": 81,
+        "prompt_tokens": 465,
+        "prompt_tokens_details": {
+          "cached_tokens": 384
+        },
+        "total_tokens": 603
+      }
+    }
+  },
+  {
+    "turn": 2,
+    "request": {
+      "messages": [
+        {
+          "content": "请先读取 test/test.txt 文件的内容，然后在 test/test.txt 文件中编辑写入 'Hello DeepSeek'。",
+          "role": "user"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"path\": \"test/test.txt\"}",
+                "name": "read_file"
+              },
+              "id": "call_00_ASGHPkxDMsJ8ih045f929789",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "这是 test.txt 的初始测试内容。\n",
+          "role": "tool",
+          "tool_call_id": "call_00_ASGHPkxDMsJ8ih045f929789"
+        }
+      ],
+      "model": "deepseek-v4-flash",
+      "reasoning_effort": "high",
+      "stream": false,
+      "thinking": {
+        "type": "enabled"
+      },
+      "tools": [
+        {
+          "function": {
+            "description": "读取指定路径的文件内容",
+            "name": "read_file",
+            "parameters": {
+              "properties": {
+                "path": {
+                  "description": "文件绝对路径或相对路径",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "function"
+        },
+        {
+          "function": {
+            "description": "向指定路径写入文件内容",
+            "name": "write_file",
+            "parameters": {
+              "properties": {
+                "content": {
+                  "description": "要写入的文件内容",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "文件绝对路径或相对路径",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "function"
+        }
+      ]
+    },
+    "response": {
+      "choices": [
+        {
+          "finish_reason": "tool_calls",
+          "index": 0,
+          "logprobs": null,
+          "message": {
+            "content": "",
+            "reasoning_content": "文件内容已读取，显示为“这是 test.txt 的初始测试内容。”。现在需要将文件内容编辑为 'Hello DeepSeek'。使用 write_file 工具写入。",
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{\"path\": \"test/test.txt\", \"content\": \"Hello DeepSeek\"}",
+                  "name": "write_file"
+                },
+                "id": "call_00_ly2WEKXIpDXPmLChciyr6139",
+                "index": 0,
+                "type": "function"
+              }
+            ]
+          }
+        }
+      ],
+      "created": 1782972333,
+      "id": "49004f4a-a1eb-4826-a9e7-8a7da29dddc0",
+      "model": "deepseek-v4-flash",
+      "object": "chat.completion",
+      "system_fingerprint": "fp_8b330d02d0_prod0820_fp8_kvcache_20260402",
+      "usage": {
+        "completion_tokens": 104,
+        "completion_tokens_details": {
+          "reasoning_tokens": 39
+        },
+        "prompt_cache_hit_tokens": 512,
+        "prompt_cache_miss_tokens": 20,
+        "prompt_tokens": 532,
+        "prompt_tokens_details": {
+          "cached_tokens": 512
+        },
+        "total_tokens": 636
+      }
+    }
+  },
+  {
+    "turn": 3,
+    "request": {
+      "messages": [
+        {
+          "content": "请先读取 test/test.txt 文件的内容，然后在 test/test.txt 文件中编辑写入 'Hello DeepSeek'。",
+          "role": "user"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"path\": \"test/test.txt\"}",
+                "name": "read_file"
+              },
+              "id": "call_00_ASGHPkxDMsJ8ih045f929789",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "这是 test.txt 的初始测试内容。\n",
+          "role": "tool",
+          "tool_call_id": "call_00_ASGHPkxDMsJ8ih045f929789"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"path\": \"test/test.txt\", \"content\": \"Hello DeepSeek\"}",
+                "name": "write_file"
+              },
+              "id": "call_00_ly2WEKXIpDXPmLChciyr6139",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "文件写入成功",
+          "role": "tool",
+          "tool_call_id": "call_00_ly2WEKXIpDXPmLChciyr6139"
+        }
+      ],
+      "model": "deepseek-v4-flash",
+      "reasoning_effort": "high",
+      "stream": false,
+      "thinking": {
+        "type": "enabled"
+      },
+      "tools": [
+        {
+          "function": {
+            "description": "读取指定路径的文件内容",
+            "name": "read_file",
+            "parameters": {
+              "properties": {
+                "path": {
+                  "description": "文件绝对路径或相对路径",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "function"
+        },
+        {
+          "function": {
+            "description": "向指定路径写入文件内容",
+            "name": "write_file",
+            "parameters": {
+              "properties": {
+                "content": {
+                  "description": "要写入的文件内容",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "文件绝对路径或相对路径",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "function"
+        }
+      ]
+    },
+    "response": {
+      "choices": [
+        {
+          "finish_reason": "stop",
+          "index": 0,
+          "logprobs": null,
+          "message": {
+            "content": "已完成操作：\n\n1. **读取文件**：`test/test.txt` 的原始内容为：`这是 test.txt 的初始测试内容。`\n2. **写入文件**：已将内容修改为 `Hello DeepSeek`，写入成功。",
+            "reasoning_content": "我已经完成了两个操作：\n\n1. 首先读取了 `test/test.txt` 文件的内容，显示为：\"这是 test.txt 的初始测试内容。\"\n2. 然后将文件内容编辑写入为 \"Hello DeepSeek\"。\n\n让我总结一下操作结果。",
+            "role": "assistant"
+          }
+        }
+      ],
+      "created": 1782972335,
+      "id": "b3109277-6a62-4e42-9903-062dc96a15bd",
+      "model": "deepseek-v4-flash",
+      "object": "chat.completion",
+      "system_fingerprint": "fp_8b330d02d0_prod0820_fp8_kvcache_20260402",
+      "usage": {
+        "completion_tokens": 109,
+        "completion_tokens_details": {
+          "reasoning_tokens": 55
+        },
+        "prompt_cache_hit_tokens": 512,
+        "prompt_cache_miss_tokens": 100,
+        "prompt_tokens": 612,
+        "prompt_tokens_details": {
+          "cached_tokens": 512
+        },
+        "total_tokens": 721
+      }
+    }
+  }
+]

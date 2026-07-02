@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -74,12 +76,18 @@ func (l *Logger) Add(e LogEntry) int64 {
 
 func (l *Logger) UpdateLastResponse(id int64, respBody string) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
+	var matchedEntry *LogEntry
 	for i := len(l.entries) - 1; i >= 0; i-- {
 		if l.entries[i].ID == id {
 			l.entries[i].ResponseBody = respBody
-			return
+			matchedEntry = &l.entries[i]
+			break
 		}
+	}
+	l.mu.Unlock()
+
+	if matchedEntry != nil {
+		l.writeDebugLog(*matchedEntry)
 	}
 }
 
@@ -109,7 +117,7 @@ func (l *Logger) UpdateTokenUsageAndStatus(id int64, usage *TokenUsage, status s
 
 func (l *Logger) UpdateOnResponse(id int64, statusCode int, latencyMs int64, status string, headers map[string]string, originalBody, transformedBody string) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
+	var matchedEntry *LogEntry
 	for i := len(l.entries) - 1; i >= 0; i-- {
 		if l.entries[i].ID == id {
 			l.entries[i].StatusCode = statusCode
@@ -130,11 +138,31 @@ func (l *Logger) UpdateOnResponse(id int64, statusCode int, latencyMs int64, sta
 			case l.subscriber <- l.entries[i]:
 			default:
 			}
+			matchedEntry = &l.entries[i]
+			break
+		}
+	}
+	l.mu.Unlock()
+
+	if matchedEntry != nil && matchedEntry.Status == "completed" && (matchedEntry.StatusCode >= 400 || matchedEntry.ResponseBody == "") {
+		l.writeDebugLog(*matchedEntry)
+	}
+}
+
+func (l *Logger) UpdateSemanticType(id int64, semanticType string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for i := len(l.entries) - 1; i >= 0; i-- {
+		if l.entries[i].ID == id {
+			l.entries[i].SemanticType = semanticType
+			select {
+			case l.subscriber <- l.entries[i]:
+			default:
+			}
 			return
 		}
 	}
 }
-
 
 func (l *Logger) Subscribe() <-chan LogEntry {
 	return l.subscriber
@@ -227,4 +255,18 @@ func (l *Logger) Stats() map[string]int {
 		"total": total,
 		"today": today,
 	}
+}
+
+func (l *Logger) writeDebugLog(e LogEntry) {
+	b, err := json.Marshal(e)
+	if err != nil {
+		return
+	}
+	_ = os.MkdirAll("test", 0755)
+	f, err := os.OpenFile("test/proxy_debug_logs.jsonl", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(append(b, '\n'))
 }

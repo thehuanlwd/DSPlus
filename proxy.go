@@ -51,6 +51,7 @@ type ProxyContext struct {
 	SessionID       string
 	TurnID          int
 	SemanticType    string
+	HasTools        bool // 是否携带工具（防幻觉保护伞使用）
 }
 
 type ProxyServer struct {
@@ -145,11 +146,16 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		hasSystemPrompt = strings.Contains(originalBody, `"role":"system"`) ||
 			strings.Contains(originalBody, `"role": "system"`)
 		if data != nil && (hasSystemPrompt || (cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none")) {
-			transformed = transformOpenAIInPlace(data, cfg.SystemPromptPlacement, cfg.ExtraPrompt, cfg.ExtraPromptPlacement)
+			extraPrompt := cfg.ExtraPrompt
+			if semanticType == "tool_result" {
+				extraPrompt = ""
+			}
+			transformed = transformOpenAIInPlace(data, cfg.SystemPromptPlacement, extraPrompt, cfg.ExtraPromptPlacement)
 		}
 	} else if format == "anthropic" {
 		hasSystemPrompt = strings.Contains(originalBody, `"system":`)
-		if data != nil && (hasSystemPrompt || (cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none")) {
+		// 如果是工具结果回传阶段（tool_result），跳过 Anthropic 转换注入，防止多余注入破坏 tool_result 纯净格式导致 400
+		if data != nil && semanticType != "tool_result" && (hasSystemPrompt || (cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none")) {
 			transformed = transformAnthropicInPlace(data, cfg.SystemPromptPlacement, cfg.ExtraPrompt, cfg.ExtraPromptPlacement)
 		}
 	}
@@ -245,6 +251,20 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		sessID, turnID = s.analysisSvc.AssignSessionAndTurn(startTime, originalBody, format, r.URL.Path)
 	}
 
+	hasTools := false
+	if data != nil {
+		if t, ok := data["tools"]; ok && t != nil {
+			if arr, isArr := t.([]interface{}); isArr && len(arr) > 0 {
+				hasTools = true
+			}
+		}
+		if f, ok := data["functions"]; ok && f != nil {
+			if arr, isArr := f.([]interface{}); isArr && len(arr) > 0 {
+				hasTools = true
+			}
+		}
+	}
+
 	ctx := &ProxyContext{
 		ResponseWriter:  w,
 		Response:        resp,
@@ -259,6 +279,7 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		SessionID:       sessID,
 		TurnID:          turnID,
 		SemanticType:    semanticType,
+		HasTools:        hasTools,
 	}
 
 	// ── Anti-Loop detection ──
@@ -472,9 +493,55 @@ func (s *ProxyServer) forwardStream(ctx *ProxyContext) {
 		estPrompt = int64(float64(len(ctx.OriginalBody)) / 2.5)
 	}
 
+	var antiHallucinationIntercepted bool
+	var hasToolsInStream bool
+	var streamID string
+	var streamModel string
+	var streamCreated float64
+
 	for scanner.Scan() {
 		line := scanner.Text()
 		line = replaceDSMLMarkers(line)
+
+		delta, err := ParseSSELine(line)
+		if err == nil && delta != nil {
+			if delta.ReasoningContent != "" {
+				reasoningBuilder.WriteString(delta.ReasoningContent)
+			}
+			if delta.Content != "" {
+				contentBuilder.WriteString(delta.Content)
+			}
+
+			if hasToolCallsInDelta(delta) {
+				hasToolsInStream = true
+			}
+
+			if streamID == "" {
+				if id, _ := delta.RawChunk["id"].(string); id != "" {
+					streamID = id
+				}
+				if m, _ := delta.RawChunk["model"].(string); m != "" {
+					streamModel = m
+				}
+				if c, ok := delta.RawChunk["created"].(float64); ok {
+					streamCreated = c
+				}
+			}
+
+			// 防幻觉拦截检测：开启防幻觉 + 请求不带 tools + 流中不含 tools 信号 + 发生了思维链推理 + 大模型输出了第一个正式 content
+			if cfg.AntiHallucinationEnabled && !ctx.HasTools && !hasToolsInStream && reasoningBuilder.Len() > 0 && delta.Content != "" && !antiHallucinationIntercepted {
+				antiHallucinationIntercepted = true
+				break // 立即截断跳出！不输出此 content chunk 给客户端。
+			}
+
+			if delta.Usage != nil {
+				lastUsage = delta.Usage
+			}
+			if delta.FinishReason != "" {
+				finishReason = delta.FinishReason
+			}
+		}
+
 		if _, err := ctx.ResponseWriter.Write([]byte(line + "\n")); err != nil {
 			log.Printf("[proxy] forwardStream write error: %v", err)
 			break
@@ -484,40 +551,189 @@ func (s *ProxyServer) forwardStream(ctx *ProxyContext) {
 			flusher.Flush()
 		}
 
-		if delta, err := ParseSSELine(line); err == nil && delta != nil {
-			if delta.Usage != nil {
-				lastUsage = delta.Usage
-			}
-			if delta.FinishReason != "" {
-				finishReason = delta.FinishReason
-			}
-			if delta.ReasoningContent != "" {
-				reasoningBuilder.WriteString(delta.ReasoningContent)
-			}
-			if delta.Content != "" {
-				contentBuilder.WriteString(delta.Content)
-			}
-
-			if delta.ReasoningContent != "" || delta.Content != "" {
-				now := time.Now()
-				if lastPushTime.IsZero() || now.Sub(lastPushTime) >= 200*time.Millisecond {
-					lastPushTime = now
-					totalChars := len(reasoningBuilder.String()) + len(contentBuilder.String())
-					estCompletion := int64(float64(totalChars) / 2.3)
-					s.logger.UpdateTokenUsageAndStatus(ctx.LogID, &TokenUsage{
-						Prompt:     estPrompt,
-						Completion: estCompletion,
-						Total:      estPrompt + estCompletion,
-					}, "streaming")
-				}
+		if delta != nil && (delta.ReasoningContent != "" || delta.Content != "") {
+			now := time.Now()
+			if lastPushTime.IsZero() || now.Sub(lastPushTime) >= 200*time.Millisecond {
+				lastPushTime = now
+				totalChars := len(reasoningBuilder.String()) + len(contentBuilder.String())
+				estCompletion := int64(float64(totalChars) / 2.3)
+				s.logger.UpdateTokenUsageAndStatus(ctx.LogID, &TokenUsage{
+					Prompt:     estPrompt,
+					Completion: estCompletion,
+					Total:      estPrompt + estCompletion,
+				}, "streaming")
 			}
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
+	if err := scanner.Err(); err != nil && !antiHallucinationIntercepted {
 		log.Printf("[proxy] forwardStream scanner error: %v", err)
 	}
 
+	// ── 情况一：被防幻觉逻辑截断 ──
+	if antiHallucinationIntercepted {
+		// 1. 关闭第一阶段的响应体连接
+		ctx.Response.Body.Close()
+
+		// 2. 提取最新消息并渲染校准词
+		latestUserMsg := getLatestUserMsg(ctx.Data)
+		calibrationPrompt := cfg.AntiHallucinationPrompt
+		if calibrationPrompt == "" {
+			calibrationPrompt = "\n\n[意图校准] 用户现在关心的是：{{latest_user_message}}\n\n"
+		}
+		calibrationText := strings.ReplaceAll(calibrationPrompt, "{{latest_user_message}}", latestUserMsg)
+
+		// 3. 向客户端流中补全校准词提示
+		s.writeCalibrationSSE(ctx.ResponseWriter, flusher, canFlush, capture, ctx.Format, calibrationText, streamID, streamModel, streamCreated)
+
+		// 4. 完结第一阶段日志记录
+		s.logger.UpdateSemanticType(ctx.LogID, "thinking_finished")
+		if lastUsage != nil {
+			s.logger.UpdateTokenUsageAndStatus(ctx.LogID, lastUsage, "completed")
+		} else {
+			estCompletion := int64(float64(reasoningBuilder.Len()) / 2.3)
+			s.logger.UpdateTokenUsageAndStatus(ctx.LogID, &TokenUsage{
+				Prompt:     estPrompt,
+				Completion: estCompletion,
+				Total:      estPrompt + estCompletion,
+			}, "completed")
+		}
+		if cfg.VerboseLogging {
+			s.logger.UpdateLastResponse(ctx.LogID, capture.String())
+		}
+
+		// 5. 新建“思维修正”第二阶段日志
+		secondLogID := s.logger.Add(LogEntry{
+			Time:            time.Now(),
+			Format:          ctx.Format,
+			RequestType:     "antihallucination_retry", // 思维修正
+			Method:          "POST",
+			Path:            ctx.Route + " (思维修正)",
+			StatusCode:      200,
+			Stream:          true,
+			Transformed:     true,
+			HasSystemPrompt: false,
+			SemanticType:    "思维修正",
+			Status:          "connecting",
+		})
+
+		// 6. 拼装第二次请求的 body
+		var secondReq map[string]interface{}
+		json.Unmarshal(ctx.TransformedBody, &secondReq)
+
+		// 强制禁用二次推理
+		if ctx.Format == "openai" {
+			secondReq["thinking"] = map[string]interface{}{"type": "disabled"}
+		} else if ctx.Format == "anthropic" {
+			delete(secondReq, "output_config")
+		}
+		delete(secondReq, "reasoning_effort")
+
+		// 插入已有的推理链和校准前缀（包裹在think内）
+		messagesRaw, ok := secondReq["messages"].([]interface{})
+		if ok {
+			if ctx.Format == "openai" {
+				messagesRaw = append(messagesRaw, map[string]interface{}{
+					"role":    "assistant",
+					"content": "<think>\n" + reasoningBuilder.String() + "\n" + calibrationText + "\n</think>",
+				})
+			} else {
+				messagesRaw = append(messagesRaw, map[string]interface{}{
+					"role": "assistant",
+					"content": []map[string]interface{}{
+						{
+							"type": "text",
+							"text": "<think>\n" + reasoningBuilder.String() + "\n" + calibrationText + "\n</think>",
+						},
+					},
+				})
+			}
+			secondReq["messages"] = messagesRaw
+		}
+		secondReqBody, _ := json.Marshal(secondReq)
+		s.logger.UpdateOnResponse(secondLogID, 0, 0, "connecting", nil, string(secondReqBody), "")
+
+		// 7. 发起第二次请求并实时转发
+		retryFR, retryUsage, secondRespBody := s.executeAndStreamAntiHallucination(ctx, secondReqBody, secondLogID, secondReq)
+
+		// 8. 写入 DONE 包结束客户端对话流
+		ctx.ResponseWriter.Write([]byte("data: [DONE]\n"))
+		if canFlush {
+			flusher.Flush()
+		}
+
+		// 9. 提交第一阶段的主 TraceEvent 存档
+		var pm TokenUsage
+		if lastUsage != nil {
+			pm = *lastUsage
+		}
+		primaryEv := NewTraceEvent(
+			ctx.StartTime,
+			ctx.LogID,
+			ctx.SessionID,
+			ctx.TurnID,
+			"primary",
+			ctx.Format,
+			ctx.Route,
+			ctx.Response.StatusCode,
+			time.Since(ctx.StartTime).Milliseconds(),
+			detectModel(ctx.OriginalBody),
+			s.selectUpstream(ctx.Format),
+			buildRequestMeta(ctx.Data, ctx.Format, ctx.Transformed, cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none", ctx.SemanticType),
+			ResponseMeta{
+				FinishReason:      "stop",
+				PromptTokens:      int(pm.Prompt),
+				CompletionTokens:  int(pm.Completion),
+				TotalTokens:       int(pm.Total),
+				CacheHitTokens:    int(pm.CacheHit),
+				CacheMissTokens:   int(pm.CacheMiss),
+				ReasoningContent:  reasoningBuilder.String(),
+				Content:           "", // 已经被截断
+				AntiLoopTriggered: false,
+			},
+			ctx.OriginalBody,
+			capture.String(),
+		)
+		primaryEv.UpstreamRequest = string(ctx.TransformedBody)
+		s.analysisSvc.SubmitEvent(primaryEv)
+
+		// 10. 提交第二阶段的“思维修正” TraceEvent 存档，通过 parent_id 关联
+		var rpm TokenUsage
+		if retryUsage != nil {
+			rpm = *retryUsage
+		}
+		retryEv := NewTraceEvent(
+			time.Now(),
+			secondLogID,
+			ctx.SessionID,
+			ctx.TurnID,
+			"思维修正",
+			ctx.Format,
+			ctx.Route+" (思维修正)",
+			200,
+			0,
+			detectModel(ctx.OriginalBody),
+			s.selectUpstream(ctx.Format),
+			buildRequestMeta(secondReq, ctx.Format, true, false, "思维修正"),
+			ResponseMeta{
+				FinishReason:     retryFR,
+				PromptTokens:     int(rpm.Prompt),
+				CompletionTokens: int(rpm.Completion),
+				TotalTokens:      int(rpm.Total),
+				CacheHitTokens:   int(rpm.CacheHit),
+				CacheMissTokens:  int(rpm.CacheMiss),
+			},
+			string(secondReqBody),
+			secondRespBody,
+		)
+		retryEv.UpstreamRequest = string(secondReqBody)
+		retryEv.ParentID = "ev_" + strconv.FormatInt(ctx.StartTime.UnixNano(), 36)
+		s.analysisSvc.SubmitEvent(retryEv)
+
+		return
+	}
+
+	// ── 情况二：常规模式走完 ──
 	if lastUsage != nil {
 		s.logger.UpdateTokenUsageAndStatus(ctx.LogID, lastUsage, "completed")
 	} else {
@@ -537,7 +753,6 @@ func (s *ProxyServer) forwardStream(ctx *ProxyContext) {
 		s.logger.UpdateLastResponse(ctx.LogID, capture.String())
 	}
 
-	// 发射 TraceEvent
 	var pm TokenUsage
 	if lastUsage != nil {
 		pm = *lastUsage
@@ -698,6 +913,7 @@ func (s *ProxyServer) streamAndMonitorPhase1(ctx *ProxyContext, state *antiLoopS
 	cfg := s.config.Get()
 
 	var completionTokens int
+	var hasToolsInStream bool
 	var analyzeDone chan analyzeResult
 	var analyzeTriggered bool
 	chunkCount := 0
@@ -713,6 +929,11 @@ func (s *ProxyServer) streamAndMonitorPhase1(ctx *ProxyContext, state *antiLoopS
 
 		line := state.scanner.Text()
 		line = replaceDSMLMarkers(line)
+
+		deltaForTools, _ := ParseSSELine(line)
+		if hasToolCallsInDelta(deltaForTools) {
+			hasToolsInStream = true
+		}
 
 		if !strings.HasPrefix(line, "data: ") {
 			if _, err := ctx.ResponseWriter.Write([]byte(line + "\n")); err != nil {
@@ -900,6 +1121,18 @@ func (s *ProxyServer) streamAndMonitorPhase1(ctx *ProxyContext, state *antiLoopS
 			}
 		}
 
+		// 防幻觉拦截：开启防幻觉 + 请求不带 tools + 流中不含 tools 信号 + 发生了思维链推理 + 已经开始输出正式正文
+		if cfg.AntiHallucinationEnabled && !ctx.HasTools && !hasToolsInStream && state.reasoningBuilder.Len() > 0 && state.contentBuilder.Len() > 0 && !state.earlyStop {
+			state.earlyStop = true
+			state.earlyStopAnalysis = &AntiLoopAnalysis{
+				Judgment:       "antihallucination",
+				Guidance:       "",
+				EnableThinking: false,
+			}
+			ctx.Response.Body.Close()
+			return
+		}
+
 		if u := parseUsageFromMap(chunk); u != nil && state.lastUsage == nil {
 			state.lastUsage = u
 		}
@@ -955,6 +1188,158 @@ func (s *ProxyServer) executeRetryPhase2(ctx *ProxyContext, state *antiLoopState
 	} else {
 		log.Printf("[antiloop] reqID=%d scanner exited abnormally (write error or break)", state.reqID)
 		traceKeyvals("event", "scanner_abort", "req_id", state.reqID)
+	}
+
+	// ── 拦截防幻觉并在 Anti-Loop 下处理 ──
+	if state.earlyStop && state.earlyStopAnalysis != nil && state.earlyStopAnalysis.Judgment == "antihallucination" {
+		log.Printf("[antiloop] reqID=%d hijacked by Anti-Hallucination continuation", state.reqID)
+		
+		latestUserMsg := getLatestUserMsg(ctx.Data)
+		calibrationPrompt := cfg.AntiHallucinationPrompt
+		if calibrationPrompt == "" {
+			calibrationPrompt = "\n\n[意图校准] 用户现在关心的是：{{latest_user_message}}\n\n"
+		}
+		calibrationText := strings.ReplaceAll(calibrationPrompt, "{{latest_user_message}}", latestUserMsg)
+
+		s.writeCalibrationSSE(ctx.ResponseWriter, state.flusher, state.canFlush, state.capture, ctx.Format, calibrationText, state.streamID, state.streamModel, state.streamCreated)
+
+		s.logger.UpdateSemanticType(ctx.LogID, "thinking_finished")
+		if state.lastUsage != nil {
+			s.logger.UpdateTokenUsageAndStatus(ctx.LogID, state.lastUsage, "completed")
+		} else {
+			var estPrompt int64
+			if ctx.Data != nil {
+				estPrompt = int64(float64(len(ctx.OriginalBody)) / 2.5)
+			}
+			estCompletion := int64(float64(state.reasoningBuilder.Len()) / 2.3)
+			s.logger.UpdateTokenUsageAndStatus(ctx.LogID, &TokenUsage{
+				Prompt:     estPrompt,
+				Completion: estCompletion,
+				Total:      estPrompt + estCompletion,
+			}, "completed")
+		}
+		if cfg.VerboseLogging {
+			s.logger.UpdateLastResponse(ctx.LogID, state.capture.String())
+		}
+
+		secondLogID := s.logger.Add(LogEntry{
+			Time:            time.Now(),
+			Format:          ctx.Format,
+			RequestType:     "antihallucination_retry", // 思维修正
+			Method:          "POST",
+			Path:            ctx.Route + " (思维修正)",
+			StatusCode:      200,
+			Stream:          true,
+			Transformed:     true,
+			HasSystemPrompt: false,
+			SemanticType:    "思维修正",
+			Status:          "connecting",
+		})
+
+		var secondReq map[string]interface{}
+		json.Unmarshal(ctx.TransformedBody, &secondReq)
+
+		if ctx.Format == "openai" {
+			secondReq["thinking"] = map[string]interface{}{"type": "disabled"}
+		} else if ctx.Format == "anthropic" {
+			delete(secondReq, "output_config")
+		}
+		delete(secondReq, "reasoning_effort")
+
+		messagesRaw, ok := secondReq["messages"].([]interface{})
+		if ok {
+			reasoningStr := state.reasoningBuilder.String()
+			if ctx.Format == "openai" {
+				messagesRaw = append(messagesRaw, map[string]interface{}{
+					"role":    "assistant",
+					"content": "<think>\n" + reasoningStr + "\n" + calibrationText + "\n</think>",
+				})
+			} else {
+				messagesRaw = append(messagesRaw, map[string]interface{}{
+					"role": "assistant",
+					"content": []map[string]interface{}{
+						{
+							"type": "text",
+							"text": "<think>\n" + reasoningStr + "\n" + calibrationText + "\n</think>",
+						},
+					},
+				})
+			}
+			secondReq["messages"] = messagesRaw
+		}
+		secondReqBody, _ := json.Marshal(secondReq)
+		s.logger.UpdateOnResponse(secondLogID, 0, 0, "connecting", nil, string(secondReqBody), "")
+
+		retryFR, retryUsage, secondRespBody := s.executeAndStreamAntiHallucination(ctx, secondReqBody, secondLogID, secondReq)
+
+		var pm TokenUsage
+		if state.lastUsage != nil {
+			pm = *state.lastUsage
+		}
+		primaryEv := NewTraceEvent(
+			ctx.StartTime,
+			ctx.LogID,
+			ctx.SessionID,
+			ctx.TurnID,
+			"primary",
+			ctx.Format,
+			ctx.Route,
+			ctx.Response.StatusCode,
+			time.Since(ctx.StartTime).Milliseconds(),
+			detectModel(ctx.OriginalBody),
+			s.selectUpstream(ctx.Format),
+			buildRequestMeta(ctx.Data, ctx.Format, ctx.Transformed, cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none", ctx.SemanticType),
+			ResponseMeta{
+				FinishReason:      "stop",
+				PromptTokens:      int(pm.Prompt),
+				CompletionTokens:  int(pm.Completion),
+				TotalTokens:       int(pm.Total),
+				CacheHitTokens:    int(pm.CacheHit),
+				CacheMissTokens:   int(pm.CacheMiss),
+				ReasoningContent:  state.reasoningBuilder.String(),
+				Content:           "",
+				AntiLoopTriggered: false,
+			},
+			ctx.OriginalBody,
+			state.capture.String(),
+		)
+		primaryEv.UpstreamRequest = string(ctx.TransformedBody)
+		s.analysisSvc.SubmitEvent(primaryEv)
+
+		var rpm TokenUsage
+		if retryUsage != nil {
+			rpm = *retryUsage
+		}
+		retryEv := NewTraceEvent(
+			time.Now(),
+			secondLogID,
+			ctx.SessionID,
+			ctx.TurnID,
+			"思维修正",
+			ctx.Format,
+			ctx.Route+" (思维修正)",
+			200,
+			0,
+			detectModel(ctx.OriginalBody),
+			s.selectUpstream(ctx.Format),
+			buildRequestMeta(secondReq, ctx.Format, true, false, "思维修正"),
+			ResponseMeta{
+				FinishReason:     retryFR,
+				PromptTokens:     int(rpm.Prompt),
+				CompletionTokens: int(rpm.Completion),
+				TotalTokens:      int(rpm.Total),
+				CacheHitTokens:   int(rpm.CacheHit),
+				CacheMissTokens:  int(rpm.CacheMiss),
+			},
+			string(secondReqBody),
+			secondRespBody,
+		)
+		retryEv.UpstreamRequest = string(secondReqBody)
+		retryEv.ParentID = "ev_" + strconv.FormatInt(ctx.StartTime.UnixNano(), 36)
+		s.analysisSvc.SubmitEvent(retryEv)
+
+		state.needsRetry = false
+		return
 	}
 
 	state.needsRetry = state.earlyStop || state.finishReason == "length"
@@ -1207,6 +1592,12 @@ func (s *ProxyServer) selectUpstream(format string) string {
 
 func detectFormat(path string, body string) string {
 	path = strings.TrimSuffix(path, "/")
+	if strings.HasSuffix(path, "/v1/chat/completions") || strings.HasSuffix(path, "/chat/completions") {
+		return "openai"
+	}
+	if strings.HasSuffix(path, "/v1/messages") || strings.HasSuffix(path, "/messages") {
+		return "anthropic"
+	}
 	if strings.HasSuffix(path, "/v1/models") || strings.HasSuffix(path, "/models") {
 		return "openai"
 	}
@@ -1408,4 +1799,229 @@ func (c *captureBuffer) String() string {
 		s += "\n\n... [stream truncated]"
 	}
 	return s
+}
+
+func getLatestUserMsg(data map[string]interface{}) string {
+	if data == nil {
+		return ""
+	}
+	messagesRaw, ok := data["messages"]
+	if !ok {
+		return ""
+	}
+	messages, ok := messagesRaw.([]interface{})
+	if !ok || len(messages) == 0 {
+		return ""
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		m, ok := messages[i].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		role, _ := m["role"].(string)
+		if role == "user" {
+			if content, ok := m["content"].(string); ok {
+				return content
+			}
+			if contentArr, ok := m["content"].([]interface{}); ok {
+				var sb strings.Builder
+				for _, blockRaw := range contentArr {
+					if block, ok := blockRaw.(map[string]interface{}); ok {
+						if t, _ := block["type"].(string); t == "text" {
+							if txt, ok := block["text"].(string); ok {
+								sb.WriteString(txt)
+							}
+						}
+					}
+				}
+				return sb.String()
+			}
+		}
+	}
+	return ""
+}
+
+func (s *ProxyServer) writeCalibrationSSE(
+	w http.ResponseWriter,
+	flusher http.Flusher,
+	canFlush bool,
+	capture *captureBuffer,
+	format string,
+	text string,
+	id string,
+	model string,
+	created float64,
+) {
+	if id == "" {
+		id = "dsplus-calibration-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	if model == "" {
+		model = "deepseek-chat"
+	}
+	if created == 0 {
+		created = float64(time.Now().Unix())
+	}
+
+	var line string
+	if format == "openai" {
+		chunk := map[string]interface{}{
+			"id":      id,
+			"object":  "chat.completion.chunk",
+			"created": created,
+			"model":   model,
+			"choices": []map[string]interface{}{
+				{
+					"index": 0,
+					"delta": map[string]interface{}{
+						"reasoning_content": text,
+					},
+					"finish_reason": nil,
+				},
+			},
+		}
+		b, _ := json.Marshal(chunk)
+		line = "data: " + string(b) + "\n\n"
+	} else {
+		// Anthropic format
+		chunk := map[string]interface{}{
+			"type":  "content_block_delta",
+			"index": 0,
+			"delta": map[string]interface{}{
+				"type": "thinking_delta",
+				"thinking": text,
+			},
+		}
+		b, _ := json.Marshal(chunk)
+		line = "data: " + string(b) + "\n\n"
+	}
+
+	w.Write([]byte(line))
+	capture.Write([]byte(line))
+	if canFlush {
+		flusher.Flush()
+	}
+}
+
+func (s *ProxyServer) executeAndStreamAntiHallucination(
+	ctx *ProxyContext,
+	body []byte,
+	secondLogID int64,
+	originalData map[string]interface{},
+) (string, *TokenUsage, string) {
+	startTime := time.Now()
+	cfg := s.config.Get()
+	flusher, canFlush := ctx.ResponseWriter.(http.Flusher)
+
+	// 发起连接
+	retryResp, err := s.executeRetryCall(body, ctx.Format)
+	if err != nil {
+		log.Printf("[antihallucination] retry call failed: %v", err)
+		s.logger.UpdateOnResponse(secondLogID, 502, time.Since(startTime).Milliseconds(), "completed", nil, string(body), "")
+		return "", nil, ""
+	}
+	defer retryResp.Body.Close()
+
+	s.logger.UpdateOnResponse(secondLogID, retryResp.StatusCode, 0, "streaming", nil, string(body), "")
+
+	scanner := bufio.NewScanner(retryResp.Body)
+	scanner.Buffer(make([]byte, 0, scannerInitialBuf), scannerMaxBuf)
+
+	var finishReason string
+	var lastUsage *TokenUsage
+	var contentBuilder strings.Builder
+	var respCapture bytes.Buffer
+	var lastPushTime time.Time
+
+	var estPrompt int64
+	estPrompt = int64(float64(len(body)) / 2.5)
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		line = replaceDSMLMarkers(line)
+
+		if delta, err := ParseSSELine(line); err == nil && delta != nil {
+			if delta.FinishReason != "" {
+				finishReason = delta.FinishReason
+			}
+			if delta.Usage != nil {
+				lastUsage = delta.Usage
+			}
+			if delta.Content != "" {
+				contentBuilder.WriteString(delta.Content)
+			}
+		}
+
+		if _, err := ctx.ResponseWriter.Write([]byte(line + "\n")); err != nil {
+			log.Printf("[antihallucination] write client error: %v", err)
+			break
+		}
+		respCapture.Write([]byte(line + "\n"))
+		if canFlush {
+			flusher.Flush()
+		}
+
+		// 实时更新 Token 计数展示
+		if contentBuilder.Len() > 0 {
+			now := time.Now()
+			if lastPushTime.IsZero() || now.Sub(lastPushTime) >= 200*time.Millisecond {
+				lastPushTime = now
+				estCompletion := int64(float64(contentBuilder.Len()) / 2.3)
+				s.logger.UpdateTokenUsageAndStatus(secondLogID, &TokenUsage{
+					Prompt:     estPrompt,
+					Completion: estCompletion,
+					Total:      estPrompt + estCompletion,
+				}, "streaming")
+			}
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		log.Printf("[antihallucination] scanner error: %v", err)
+	}
+
+	latency := time.Since(startTime).Milliseconds()
+	s.logger.UpdateOnResponse(secondLogID, retryResp.StatusCode, latency, "completed", nil, "", "")
+
+	if lastUsage != nil {
+		s.logger.UpdateTokenUsageAndStatus(secondLogID, lastUsage, "completed")
+	} else {
+		estCompletion := int64(float64(contentBuilder.Len()) / 2.3)
+		lastUsage = &TokenUsage{
+			Prompt:     estPrompt,
+			Completion: estCompletion,
+			Total:      estPrompt + estCompletion,
+		}
+		s.logger.UpdateTokenUsageAndStatus(secondLogID, lastUsage, "completed")
+	}
+
+	if cfg.VerboseLogging {
+		s.logger.UpdateLastResponse(secondLogID, truncateBody(respCapture.String()))
+	}
+
+	return finishReason, lastUsage, respCapture.String()
+}
+
+func hasToolCallsInDelta(delta *StreamDelta) bool {
+	if delta == nil || delta.RawChunk == nil {
+		return false
+	}
+	// OpenAI format tool_calls detection
+	if choices, ok := delta.RawChunk["choices"].([]interface{}); ok && len(choices) > 0 {
+		if choice, ok := choices[0].(map[string]interface{}); ok {
+			if d, ok := choice["delta"].(map[string]interface{}); ok {
+				if tc, ok := d["tool_calls"]; ok && tc != nil {
+					return true
+				}
+			}
+		}
+	}
+	// Anthropic format tool_use detection
+	if typeVal, _ := delta.RawChunk["type"].(string); typeVal == "content_block_start" {
+		if block, ok := delta.RawChunk["content_block"].(map[string]interface{}); ok {
+			if bType, _ := block["type"].(string); bType == "tool_use" {
+				return true
+			}
+		}
+	}
+	return false
 }

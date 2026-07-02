@@ -66,6 +66,7 @@ func main() {
 			svc.config = safeCfg
 		}
 		logger := NewLogger(2000)
+		_ = os.Remove("test/proxy_debug_logs.jsonl") // 重启时清空旧的 debug 代理日志
 		proxy := NewProxyServer(safeCfg, logger, svc)
 		initWSHub(logger)
 

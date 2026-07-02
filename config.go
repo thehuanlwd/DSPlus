@@ -34,6 +34,8 @@ type Config struct {
 	AnalysisPersistence      bool   `json:"analysis_persistence"`
 	AnalysisPersistRawBodies bool   `json:"analysis_persist_raw_bodies"`
 	AnalysisRetentionDays    int    `json:"analysis_retention_days"`
+	AntiHallucinationEnabled bool   `json:"anti_hallucination_enabled"`
+	AntiHallucinationPrompt  string `json:"anti_hallucination_prompt"`
 }
 
 func DefaultConfig() Config {
@@ -59,6 +61,8 @@ func DefaultConfig() Config {
 		AnalysisPersistence:      true,
 		AnalysisPersistRawBodies: true,
 		AnalysisRetentionDays:    7,
+		AntiHallucinationEnabled: false,
+		AntiHallucinationPrompt:  "\n\n[意图校准] 用户现在关心的是：{{latest_user_message}}\n\n",
 	}
 }
 

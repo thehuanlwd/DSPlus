@@ -1,0 +1,525 @@
+[
+  {
+    "turn": 1,
+    "request": {
+      "messages": [
+        {
+          "content": "请先读取 test/test.txt 文件的内容，然后在 test/test.txt 文件中编辑写入 'Hello World'，最后再次读取该文件内容以确认写入成功。",
+          "role": "user"
+        }
+      ],
+      "model": "deepseek-v4-flash",
+      "reasoning_effort": "high",
+      "stream": false,
+      "thinking": {
+        "type": "enabled"
+      },
+      "tools": [
+        {
+          "function": {
+            "description": "读取指定路径的文件内容",
+            "name": "read_file",
+            "parameters": {
+              "properties": {
+                "path": {
+                  "description": "文件路径",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "function"
+        },
+        {
+          "function": {
+            "description": "向指定路径写入文件内容",
+            "name": "write_file",
+            "parameters": {
+              "properties": {
+                "content": {
+                  "description": "要写入的内容",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "文件路径",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "function"
+        }
+      ]
+    },
+    "response": {
+      "choices": [
+        {
+          "finish_reason": "tool_calls",
+          "index": 0,
+          "logprobs": null,
+          "message": {
+            "content": "",
+            "reasoning_content": "用户要求先读取 test/test.txt 文件的内容，然后编辑写入 'Hello World'，最后再次读取确认。我需要逐步执行这些操作。\n\n首先，读取文件。使用 read_file 工具，路径为 \"test/test.txt\"。\n\n然后，写入文件。使用 write_file 工具，路径为 \"test/test.txt\"，内容为 \"Hello World\"。\n\n最后，再次读取文件确认。\n\n让我开始。",
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{\"path\": \"test/test.txt\"}",
+                  "name": "read_file"
+                },
+                "id": "call_00_2DtjA4fPizGf6wwdi8Mn2727",
+                "index": 0,
+                "type": "function"
+              }
+            ]
+          }
+        }
+      ],
+      "created": 1782976372,
+      "id": "e9738bff-567b-48c2-bece-7e06c7980cb9",
+      "model": "deepseek-v4-flash",
+      "object": "chat.completion",
+      "system_fingerprint": "fp_8b330d02d0_prod0820_fp8_kvcache_20260402",
+      "usage": {
+        "completion_tokens": 130,
+        "completion_tokens_details": {
+          "reasoning_tokens": 84
+        },
+        "prompt_cache_hit_tokens": 384,
+        "prompt_cache_miss_tokens": 81,
+        "prompt_tokens": 465,
+        "prompt_tokens_details": {
+          "cached_tokens": 384
+        },
+        "total_tokens": 595
+      }
+    }
+  },
+  {
+    "turn": 2,
+    "request": {
+      "messages": [
+        {
+          "content": "请先读取 test/test.txt 文件的内容，然后在 test/test.txt 文件中编辑写入 'Hello World'，最后再次读取该文件内容以确认写入成功。",
+          "role": "user"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"path\": \"test/test.txt\"}",
+                "name": "read_file"
+              },
+              "id": "call_00_2DtjA4fPizGf6wwdi8Mn2727",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "这是 test.txt 初始内容。\n",
+          "role": "tool",
+          "tool_call_id": "call_00_2DtjA4fPizGf6wwdi8Mn2727"
+        }
+      ],
+      "model": "deepseek-v4-flash",
+      "reasoning_effort": "high",
+      "stream": false,
+      "thinking": {
+        "type": "enabled"
+      },
+      "tools": [
+        {
+          "function": {
+            "description": "读取指定路径的文件内容",
+            "name": "read_file",
+            "parameters": {
+              "properties": {
+                "path": {
+                  "description": "文件路径",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "function"
+        },
+        {
+          "function": {
+            "description": "向指定路径写入文件内容",
+            "name": "write_file",
+            "parameters": {
+              "properties": {
+                "content": {
+                  "description": "要写入的内容",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "文件路径",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "function"
+        }
+      ]
+    },
+    "response": {
+      "choices": [
+        {
+          "finish_reason": "tool_calls",
+          "index": 0,
+          "logprobs": null,
+          "message": {
+            "content": "",
+            "reasoning_content": "好的，初始内容是\"这是 test.txt 初始内容。\"。现在我要写入'Hello World'。",
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{\"path\": \"test/test.txt\", \"content\": \"Hello World\"}",
+                  "name": "write_file"
+                },
+                "id": "call_00_34nDd6TMv3wLdErz5C7c6146",
+                "index": 0,
+                "type": "function"
+              }
+            ]
+          }
+        }
+      ],
+      "created": 1782976374,
+      "id": "103c99f0-92a3-44a3-85a5-e5da99379bd6",
+      "model": "deepseek-v4-flash",
+      "object": "chat.completion",
+      "system_fingerprint": "fp_8b330d02d0_prod0820_fp8_kvcache_20260402",
+      "usage": {
+        "completion_tokens": 84,
+        "completion_tokens_details": {
+          "reasoning_tokens": 21
+        },
+        "prompt_cache_hit_tokens": 512,
+        "prompt_cache_miss_tokens": 18,
+        "prompt_tokens": 530,
+        "prompt_tokens_details": {
+          "cached_tokens": 512
+        },
+        "total_tokens": 614
+      }
+    }
+  },
+  {
+    "turn": 3,
+    "request": {
+      "messages": [
+        {
+          "content": "请先读取 test/test.txt 文件的内容，然后在 test/test.txt 文件中编辑写入 'Hello World'，最后再次读取该文件内容以确认写入成功。",
+          "role": "user"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"path\": \"test/test.txt\"}",
+                "name": "read_file"
+              },
+              "id": "call_00_2DtjA4fPizGf6wwdi8Mn2727",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "这是 test.txt 初始内容。\n",
+          "role": "tool",
+          "tool_call_id": "call_00_2DtjA4fPizGf6wwdi8Mn2727"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"path\": \"test/test.txt\", \"content\": \"Hello World\"}",
+                "name": "write_file"
+              },
+              "id": "call_00_34nDd6TMv3wLdErz5C7c6146",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "文件写入成功",
+          "role": "tool",
+          "tool_call_id": "call_00_34nDd6TMv3wLdErz5C7c6146"
+        }
+      ],
+      "model": "deepseek-v4-flash",
+      "reasoning_effort": "high",
+      "stream": false,
+      "thinking": {
+        "type": "enabled"
+      },
+      "tools": [
+        {
+          "function": {
+            "description": "读取指定路径的文件内容",
+            "name": "read_file",
+            "parameters": {
+              "properties": {
+                "path": {
+                  "description": "文件路径",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "function"
+        },
+        {
+          "function": {
+            "description": "向指定路径写入文件内容",
+            "name": "write_file",
+            "parameters": {
+              "properties": {
+                "content": {
+                  "description": "要写入的内容",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "文件路径",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "function"
+        }
+      ]
+    },
+    "response": {
+      "choices": [
+        {
+          "finish_reason": "tool_calls",
+          "index": 0,
+          "logprobs": null,
+          "message": {
+            "content": "",
+            "reasoning_content": "Now let's read the file again to confirm.",
+            "role": "assistant",
+            "tool_calls": [
+              {
+                "function": {
+                  "arguments": "{\"path\": \"test/test.txt\"}",
+                  "name": "read_file"
+                },
+                "id": "call_00_4rwrPOrTiTTNsfxMZdgp1839",
+                "index": 0,
+                "type": "function"
+              }
+            ]
+          }
+        }
+      ],
+      "created": 1782976375,
+      "id": "d6a5d80e-0073-4339-83a5-d7100ae778e4",
+      "model": "deepseek-v4-flash",
+      "object": "chat.completion",
+      "system_fingerprint": "fp_8b330d02d0_prod0820_fp8_kvcache_20260402",
+      "usage": {
+        "completion_tokens": 56,
+        "completion_tokens_details": {
+          "reasoning_tokens": 10
+        },
+        "prompt_cache_hit_tokens": 512,
+        "prompt_cache_miss_tokens": 96,
+        "prompt_tokens": 608,
+        "prompt_tokens_details": {
+          "cached_tokens": 512
+        },
+        "total_tokens": 664
+      }
+    }
+  },
+  {
+    "turn": 4,
+    "request": {
+      "messages": [
+        {
+          "content": "请先读取 test/test.txt 文件的内容，然后在 test/test.txt 文件中编辑写入 'Hello World'，最后再次读取该文件内容以确认写入成功。",
+          "role": "user"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"path\": \"test/test.txt\"}",
+                "name": "read_file"
+              },
+              "id": "call_00_2DtjA4fPizGf6wwdi8Mn2727",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "这是 test.txt 初始内容。\n",
+          "role": "tool",
+          "tool_call_id": "call_00_2DtjA4fPizGf6wwdi8Mn2727"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"path\": \"test/test.txt\", \"content\": \"Hello World\"}",
+                "name": "write_file"
+              },
+              "id": "call_00_34nDd6TMv3wLdErz5C7c6146",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "文件写入成功",
+          "role": "tool",
+          "tool_call_id": "call_00_34nDd6TMv3wLdErz5C7c6146"
+        },
+        {
+          "content": "",
+          "role": "assistant",
+          "tool_calls": [
+            {
+              "function": {
+                "arguments": "{\"path\": \"test/test.txt\"}",
+                "name": "read_file"
+              },
+              "id": "call_00_4rwrPOrTiTTNsfxMZdgp1839",
+              "type": "function"
+            }
+          ]
+        },
+        {
+          "content": "Hello World",
+          "role": "tool",
+          "tool_call_id": "call_00_4rwrPOrTiTTNsfxMZdgp1839"
+        }
+      ],
+      "model": "deepseek-v4-flash",
+      "reasoning_effort": "high",
+      "stream": false,
+      "thinking": {
+        "type": "enabled"
+      },
+      "tools": [
+        {
+          "function": {
+            "description": "读取指定路径的文件内容",
+            "name": "read_file",
+            "parameters": {
+              "properties": {
+                "path": {
+                  "description": "文件路径",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "function"
+        },
+        {
+          "function": {
+            "description": "向指定路径写入文件内容",
+            "name": "write_file",
+            "parameters": {
+              "properties": {
+                "content": {
+                  "description": "要写入的内容",
+                  "type": "string"
+                },
+                "path": {
+                  "description": "文件路径",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "path",
+                "content"
+              ],
+              "type": "object"
+            }
+          },
+          "type": "function"
+        }
+      ]
+    },
+    "response": {
+      "choices": [
+        {
+          "finish_reason": "stop",
+          "index": 0,
+          "logprobs": null,
+          "message": {
+            "content": "",
+            "reasoning_content": "已成功完成所有操作：\n\n1. **首次读取**：文件初始内容为“这是 test.txt 初始内容。”\n2. **写入**：已将文件内容修改为“Hello World”。\n3. **再次读取**：确认文件内容已更新为“Hello World”，写入成功。",
+            "role": "assistant"
+          }
+        }
+      ],
+      "created": 1782976376,
+      "id": "3579d948-57f8-4965-97c0-f315de4a8b51",
+      "model": "deepseek-v4-flash",
+      "object": "chat.completion",
+      "system_fingerprint": "fp_8b330d02d0_prod0820_fp8_kvcache_20260402",
+      "usage": {
+        "completion_tokens": 60,
+        "completion_tokens_details": {
+          "reasoning_tokens": 60
+        },
+        "prompt_cache_hit_tokens": 640,
+        "prompt_cache_miss_tokens": 28,
+        "prompt_tokens": 668,
+        "prompt_tokens_details": {
+          "cached_tokens": 640
+        },
+        "total_tokens": 728
+      }
+    }
+  }
+]

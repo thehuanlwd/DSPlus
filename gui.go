@@ -243,6 +243,8 @@ func handleAPISaveConfig(w http.ResponseWriter, r *http.Request, cfg *SafeConfig
 		changed = setIntField(updates, "max_tokens_custom", &c.MaxTokensCustom, 0) || changed
 		changed = setIntField(updates, "antiloop_check_tokens", &c.AntiLoopCheckTokens, 0) || changed
 		changed = setIntField(updates, "analysis_retention_days", &c.AnalysisRetentionDays, 1) || changed
+		changed = setBoolField(updates, "anti_hallucination_enabled", &c.AntiHallucinationEnabled) || changed
+		changed = setStringField(updates, "anti_hallucination_prompt", &c.AntiHallucinationPrompt) || changed
 		if c.AnalysisPersistence != c.AnalysisEnabled {
 			c.AnalysisPersistence = c.AnalysisEnabled
 			changed = true
