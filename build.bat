@@ -1,5 +1,9 @@
 @echo off
 set CGO_ENABLED=1
+
+:: Kill DSPlus.exe if it is running
+taskkill /f /im DSPlus.exe >nul 2>nul
+
 echo Building DSPlus...
 go build -ldflags="-H windowsgui -s -w" -o DSPlus.exe .
 if %ERRORLEVEL% == 0 (

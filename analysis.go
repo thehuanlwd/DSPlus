@@ -148,6 +148,7 @@ type TimelineItem struct {
 	MessageIdx       int         `json:"message_idx,omitempty"`
 	Event            *TraceEvent `json:"event,omitempty"`
 	Tools            []ToolMeta  `json:"tools,omitempty"` // 可用工具列表详情
+	ToolCalls        []string    `json:"tool_calls,omitempty"` // 新增：工具调用详情列表
 }
 
 type TimelinePage struct {
@@ -1362,6 +1363,7 @@ func (s *AnalysisService) GetTimelinePage(id string, offset, limit int) (Timelin
 				ReasoningContent: msg.ReasoningContent,
 				MessageIdx:       idx,
 				Tools:            toolsDetail,
+				ToolCalls:        msg.ToolCalls,
 			})
 		}
 		for _, ev := range turn.Events {
@@ -1702,94 +1704,52 @@ func extractChatHistory(rawRequest string, format string, finalReply string, fin
 	return history
 }
 
-// detectSemanticType 根据请求内容判断语义类型
-// 返回值: "chat" / "tool_call" / "tool_result" / "thinking_cont"
-// 注意: 防循环相关类型（antiloop_retry / antiloop_analyzer / debug）由调用方直接传入，不在此函数判断
+// detectSemanticType 根据当前请求的最新消息判断其初始行为性质
+// 返回值: "对话开始" / "工具回传"
+// 注意: 防循环、防幻觉等辅助逻辑由调用方在响应时或二阶段中修正
 func detectSemanticType(data map[string]interface{}, format string) string {
 	if data == nil {
-		return "chat"
+		return "对话开始"
 	}
 
 	messagesRaw, ok := data["messages"]
 	if !ok {
-		return "chat"
+		return "对话开始"
 	}
 	messages, ok := messagesRaw.([]interface{})
 	if !ok || len(messages) == 0 {
-		return "chat"
+		return "对话开始"
 	}
 
-	hasToolResultMessage := false
-	lastAssistantHasToolCalls := false
-	lastAssistantHasReasoning := false
+	// 仅检查最后一条消息 (last message)
+	lastMsgRaw := messages[len(messages)-1]
+	lastMsg, ok := lastMsgRaw.(map[string]interface{})
+	if !ok {
+		return "对话开始"
+	}
 
-	for _, msgRaw := range messages {
-		m, ok := msgRaw.(map[string]interface{})
-		if !ok {
-			continue
-		}
-		role, _ := m["role"].(string)
+	role, _ := lastMsg["role"].(string)
 
-		// 检测 tool 角色消息（OpenAI 格式）
-		if role == "tool" {
-			hasToolResultMessage = true
-		}
+	// 1. OpenAI 格式下，工具回传消息的角色是 "tool"
+	if role == "tool" {
+		return "工具回传"
+	}
 
-		// 检测 user 消息（Anthropic 格式下，工具回传结果包裹在 user 角色的 content 数组中）
-		if role == "user" {
-			if contentArr, ok := m["content"].([]interface{}); ok {
-				for _, part := range contentArr {
-					if pMap, ok := part.(map[string]interface{}); ok {
-						pType, _ := pMap["type"].(string)
-						if pType == "tool_result" {
-							hasToolResultMessage = true
-						}
-					}
-				}
-			}
-		}
-
-		// 检测 assistant 消息
-		if role == "assistant" {
-			// OpenAI 格式: tool_calls 字段
-			if tcs, ok := m["tool_calls"].([]interface{}); ok && len(tcs) > 0 {
-				lastAssistantHasToolCalls = true
-			}
-			// OpenAI 格式: reasoning_content 字段
-			if rc, ok := m["reasoning_content"].(string); ok && rc != "" {
-				lastAssistantHasReasoning = true
-			}
-			// Anthropic 格式: content 数组中含 tool_use / thinking 块
-			if contentArr, ok := m["content"].([]interface{}); ok {
-				for _, part := range contentArr {
-					if pMap, ok := part.(map[string]interface{}); ok {
-						pType, _ := pMap["type"].(string)
-						if pType == "tool_use" {
-							lastAssistantHasToolCalls = true
-						}
-						if pType == "thinking" {
-							lastAssistantHasReasoning = true
-						}
-						if pType == "tool_result" {
-							hasToolResultMessage = true
-						}
+	// 2. Anthropic 格式下，工具回传包裹在 "user" 角色的 content 数组中，含有 type == "tool_result" 的元素
+	if role == "user" {
+		if contentArr, ok := lastMsg["content"].([]interface{}); ok {
+			for _, part := range contentArr {
+				if pMap, ok := part.(map[string]interface{}); ok {
+					pType, _ := pMap["type"].(string)
+					if pType == "tool_result" {
+						return "工具回传"
 					}
 				}
 			}
 		}
 	}
 
-	// 优先级判断
-	if hasToolResultMessage && lastAssistantHasReasoning {
-		return "thinking_cont" // 工具结果回传 + 之前有思考链 → 继续思考
-	}
-	if hasToolResultMessage {
-		return "tool_result" // 有工具结果回传
-	}
-	if lastAssistantHasToolCalls {
-		return "tool_call" // assistant 发起了工具调用，等待结果
-	}
-	return "chat"
+	return "对话开始"
 }
 
 func truncateString(s string, maxLen int) string {

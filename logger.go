@@ -29,6 +29,7 @@ type LogEntry struct {
 	Transformed      bool              `json:"transformed"`
 	HasSystemPrompt  bool              `json:"has_system_prompt"`
 	SemanticType     string            `json:"semantic_type,omitempty"`
+	SystemEvent      string            `json:"system_event,omitempty"`
 	ResponseHeaders  map[string]string `json:"response_headers,omitempty"`
 	OriginalBody     string            `json:"original_body,omitempty"`
 	TransformedBody  string            `json:"transformed_body,omitempty"`
@@ -155,6 +156,21 @@ func (l *Logger) UpdateSemanticType(id int64, semanticType string) {
 	for i := len(l.entries) - 1; i >= 0; i-- {
 		if l.entries[i].ID == id {
 			l.entries[i].SemanticType = semanticType
+			select {
+			case l.subscriber <- l.entries[i]:
+			default:
+			}
+			return
+		}
+	}
+}
+
+func (l *Logger) UpdateSystemEvent(id int64, systemEvent string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for i := len(l.entries) - 1; i >= 0; i-- {
+		if l.entries[i].ID == id {
+			l.entries[i].SystemEvent = systemEvent
 			select {
 			case l.subscriber <- l.entries[i]:
 			default:

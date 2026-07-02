@@ -76,6 +76,8 @@ go test -v -run TestTransformOpenAIInPlace ./...  # 单个测试
    - 并行分析器（goroutine，不中断主流程）
    - finish_reason="length" 兜底
 5. **自包含哈希去重日志**：`AnalysisService` 对大段 system prompt 计算 MD5，同天内仅首发写入明文，后续使用哈希引用，并在读盘时自包含还原，解决无损存储与磁盘体积的矛盾。
+6. **物理行为与系统干预分离**：日志的 `SemanticType` 只代表真实的 API 物理网络交互行为，而防循环重试、防幻觉、思考完成等辅助控制事件由 `RequestType` 和 `SystemEvent` 承载，并在最后一列表头独立渲染，请求端点如实展现原本路径，行为与标记彻底解耦。
+7. **局部增量更新流**：前端 Token 数据高频更新时改用防御性增量更新，绝不重写 `innerHTML`，以避免鼠标 Hover 闪烁并保证整行动作交互（如点击抽屉）的高灵敏传递。
 
 ### API 端点
 

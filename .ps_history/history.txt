@@ -20,3 +20,9 @@ go run test/test_client.go --mode chat
 .\build.bat
 go run test/test_client.go --mode chat
 .\build.bat
+go run test/test_triple_tools.go -format openai
+Install-Module -Name Terminal-Icons -Scope CurrentUser -Force
+.\build.bat
+go run test/test_triple_tools.go -format openai
+go run test/test_triple_tools.go -format anthropic
+.\build.bat

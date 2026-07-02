@@ -307,7 +307,12 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		if fr == "length" || fr == "max_tokens" {
 			log.Printf("[antiloop] non-stream finish_reason=%s, triggering retry", fr)
 			bodyBytes = s.handleAntiLoop(transformedBody, format, "")
+			fr = detectBufferFinishReason(bodyBytes)
 		}
+
+		hasToolsInResponse := len(parseAssistantToolCalls(string(bodyBytes), format)) > 0
+		finalAction := s.updateFinalSemanticAction(logID, semanticType, hasTools, hasToolsInResponse, fr)
+		semanticType = finalAction
 
 		latency := time.Since(startTime)
 		s.logger.UpdateOnResponse(logID, resp.StatusCode, latency.Milliseconds(), "connecting", respHeaders, "", "")
@@ -587,7 +592,7 @@ func (s *ProxyServer) forwardStream(ctx *ProxyContext) {
 		s.writeCalibrationSSE(ctx.ResponseWriter, flusher, canFlush, capture, ctx.Format, calibrationText, streamID, streamModel, streamCreated)
 
 		// 4. 完结第一阶段日志记录
-		s.logger.UpdateSemanticType(ctx.LogID, "thinking_finished")
+		s.logger.UpdateSystemEvent(ctx.LogID, "thinking_finished")
 		if lastUsage != nil {
 			s.logger.UpdateTokenUsageAndStatus(ctx.LogID, lastUsage, "completed")
 		} else {
@@ -608,12 +613,12 @@ func (s *ProxyServer) forwardStream(ctx *ProxyContext) {
 			Format:          ctx.Format,
 			RequestType:     "antihallucination_retry", // 思维修正
 			Method:          "POST",
-			Path:            ctx.Route + " (思维修正)",
+			Path:            ctx.Route,
 			StatusCode:      200,
 			Stream:          true,
 			Transformed:     true,
 			HasSystemPrompt: false,
-			SemanticType:    "思维修正",
+			SemanticType:    ctx.SemanticType,
 			Status:          "connecting",
 		})
 
@@ -655,6 +660,9 @@ func (s *ProxyServer) forwardStream(ctx *ProxyContext) {
 
 		// 7. 发起第二次请求并实时转发
 		retryFR, retryUsage, secondRespBody := s.executeAndStreamAntiHallucination(ctx, secondReqBody, secondLogID, secondReq)
+
+		hasToolsInSecondResponse := len(parseAssistantToolCalls(secondRespBody, ctx.Format)) > 0
+		finalAction := s.updateFinalSemanticAction(secondLogID, ctx.SemanticType, ctx.HasTools, hasToolsInSecondResponse, retryFR)
 
 		// 8. 写入 DONE 包结束客户端对话流
 		ctx.ResponseWriter.Write([]byte("data: [DONE]\n"))
@@ -707,14 +715,14 @@ func (s *ProxyServer) forwardStream(ctx *ProxyContext) {
 			secondLogID,
 			ctx.SessionID,
 			ctx.TurnID,
-			"思维修正",
+			finalAction,
 			ctx.Format,
-			ctx.Route+" (思维修正)",
+			ctx.Route,
 			200,
 			0,
 			detectModel(ctx.OriginalBody),
 			s.selectUpstream(ctx.Format),
-			buildRequestMeta(secondReq, ctx.Format, true, false, "思维修正"),
+			buildRequestMeta(secondReq, ctx.Format, true, false, finalAction),
 			ResponseMeta{
 				FinishReason:     retryFR,
 				PromptTokens:     int(rpm.Prompt),
@@ -734,6 +742,9 @@ func (s *ProxyServer) forwardStream(ctx *ProxyContext) {
 	}
 
 	// ── 情况二：常规模式走完 ──
+	finalAction := s.updateFinalSemanticAction(ctx.LogID, ctx.SemanticType, ctx.HasTools, hasToolsInStream, finishReason)
+	ctx.SemanticType = finalAction
+
 	if lastUsage != nil {
 		s.logger.UpdateTokenUsageAndStatus(ctx.LogID, lastUsage, "completed")
 	} else {
@@ -811,6 +822,10 @@ func (s *ProxyServer) forwardBuffered(ctx *ProxyContext) {
 
 	fr := detectBufferFinishReason(bodyBytes)
 
+	hasToolsInResponse := len(parseAssistantToolCalls(string(bodyBytes), ctx.Format)) > 0
+	finalAction := s.updateFinalSemanticAction(ctx.LogID, ctx.SemanticType, ctx.HasTools, hasToolsInResponse, fr)
+	ctx.SemanticType = finalAction
+
 	// 发射 TraceEvent
 	var pm TokenUsage
 	if lastUsage != nil {
@@ -867,6 +882,7 @@ type antiLoopState struct {
 	scanner               *bufio.Scanner
 	needsRetry            bool
 	retryBody             []byte
+	hasToolsInStream      bool
 }
 
 func (s *ProxyServer) initAntiLoopState(ctx *ProxyContext) *antiLoopState {
@@ -933,6 +949,7 @@ func (s *ProxyServer) streamAndMonitorPhase1(ctx *ProxyContext, state *antiLoopS
 		deltaForTools, _ := ParseSSELine(line)
 		if hasToolCallsInDelta(deltaForTools) {
 			hasToolsInStream = true
+			state.hasToolsInStream = true
 		}
 
 		if !strings.HasPrefix(line, "data: ") {
@@ -1203,7 +1220,7 @@ func (s *ProxyServer) executeRetryPhase2(ctx *ProxyContext, state *antiLoopState
 
 		s.writeCalibrationSSE(ctx.ResponseWriter, state.flusher, state.canFlush, state.capture, ctx.Format, calibrationText, state.streamID, state.streamModel, state.streamCreated)
 
-		s.logger.UpdateSemanticType(ctx.LogID, "thinking_finished")
+		s.logger.UpdateSystemEvent(ctx.LogID, "thinking_finished")
 		if state.lastUsage != nil {
 			s.logger.UpdateTokenUsageAndStatus(ctx.LogID, state.lastUsage, "completed")
 		} else {
@@ -1227,12 +1244,12 @@ func (s *ProxyServer) executeRetryPhase2(ctx *ProxyContext, state *antiLoopState
 			Format:          ctx.Format,
 			RequestType:     "antihallucination_retry", // 思维修正
 			Method:          "POST",
-			Path:            ctx.Route + " (思维修正)",
+			Path:            ctx.Route,
 			StatusCode:      200,
 			Stream:          true,
 			Transformed:     true,
 			HasSystemPrompt: false,
-			SemanticType:    "思维修正",
+			SemanticType:    ctx.SemanticType,
 			Status:          "connecting",
 		})
 
@@ -1271,6 +1288,9 @@ func (s *ProxyServer) executeRetryPhase2(ctx *ProxyContext, state *antiLoopState
 		s.logger.UpdateOnResponse(secondLogID, 0, 0, "connecting", nil, string(secondReqBody), "")
 
 		retryFR, retryUsage, secondRespBody := s.executeAndStreamAntiHallucination(ctx, secondReqBody, secondLogID, secondReq)
+
+		hasToolsInSecondResponse := len(parseAssistantToolCalls(secondRespBody, ctx.Format)) > 0
+		finalAction := s.updateFinalSemanticAction(secondLogID, ctx.SemanticType, ctx.HasTools, hasToolsInSecondResponse, retryFR)
 
 		var pm TokenUsage
 		if state.lastUsage != nil {
@@ -1315,14 +1335,14 @@ func (s *ProxyServer) executeRetryPhase2(ctx *ProxyContext, state *antiLoopState
 			secondLogID,
 			ctx.SessionID,
 			ctx.TurnID,
-			"思维修正",
+			finalAction,
 			ctx.Format,
-			ctx.Route+" (思维修正)",
+			ctx.Route,
 			200,
 			0,
 			detectModel(ctx.OriginalBody),
 			s.selectUpstream(ctx.Format),
-			buildRequestMeta(secondReq, ctx.Format, true, false, "思维修正"),
+			buildRequestMeta(secondReq, ctx.Format, true, false, finalAction),
 			ResponseMeta{
 				FinishReason:     retryFR,
 				PromptTokens:     int(rpm.Prompt),
@@ -1512,7 +1532,8 @@ func (s *ProxyServer) finalizeStream(ctx *ProxyContext, state *antiLoopState) {
 		state.flusher.Flush()
 	}
 	log.Printf("[antiloop] reqID=%d stream complete, [DONE] sent", state.reqID)
-	trace("stream_done req_id=%d", state.reqID)
+	finalAction := s.updateFinalSemanticAction(ctx.LogID, ctx.SemanticType, ctx.HasTools, state.hasToolsInStream, state.finishReason)
+	ctx.SemanticType = finalAction
 
 	if state.lastUsage != nil {
 		s.logger.UpdateTokenUsageAndStatus(ctx.LogID, state.lastUsage, "completed")
@@ -2024,4 +2045,22 @@ func hasToolCallsInDelta(delta *StreamDelta) bool {
 		}
 	}
 	return false
+}
+
+// updateFinalSemanticAction 根据响应结果，在请求结束时更新日志的最终行为定性
+func (s *ProxyServer) updateFinalSemanticAction(logID int64, initialAction string, hasToolsInRequest bool, hasToolsInResponse bool, finishReason string) string {
+	finalAction := initialAction
+
+	if hasToolsInResponse {
+		if initialAction == "工具回传" {
+			finalAction = "调用回传"
+		} else {
+			finalAction = "工具调用"
+		}
+	} else if finishReason == "stop" {
+		finalAction = "完成对话"
+	}
+
+	s.logger.UpdateSemanticType(logID, finalAction)
+	return finalAction
 }
