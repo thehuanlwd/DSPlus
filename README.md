@@ -1,411 +1,724 @@
-# DSPlus — DeepSeek V4 系统提示词重组代理
+<div align="center">
 
-DSPlus 是一个本地运行的轻量级 API 中转代理，专为解决 DeepSeek V4 模型**系统提示词优先级弱于首条用户消息**的问题。它将 System Prompt 拼接到第一条 User Message 尾部，其余内容完全透明透传。
+# DSPlus
 
-同时内置 **防思维循环（Anti-Loop）** 引擎 —— 智能检测模型何时陷入死循环过度推理，自动介入、分析、重试。
+### Unleash the true power of DeepSeek V4
 
-## 目录
+**Enhance instruction following, stabilize long conversations, and reduce hallucinations, format dropouts, reasoning-chain confusion, and tool-call freezes.**
 
-- [核心原理](#核心原理)
-- [项目结构](#项目结构)
-- [功能特性](#功能特性)
-- [防思维循环](#防思维循环)
-- [快速开始](#快速开始)
-- [编译构建](#编译构建)
-- [接入工具](#接入工具)
-- [GUI 使用说明](#gui-使用说明)
-- [API 端点](#api-端点)
-- [配置说明](#配置说明)
-- [注意事项](#注意事项)
+<br>
 
-## 核心原理
+<p>
+  <a href="README.md"><strong>English</strong></a> · <a href="docs/README_zh.md">中文</a>
+</p>
 
+<div align="center" markdown="1">
+
+![Go](https://img.shields.io/badge/Go-1.20+-00ADD8?style=for-the-badge&logo=go&logoColor=white)&#160;
+![DeepSeek](https://img.shields.io/badge/DeepSeek-V4-4B7BFF?style=for-the-badge)&#160;
+![OpenAI Compatible](https://img.shields.io/badge/OpenAI-Compatible-111111?style=for-the-badge&logo=openai&logoColor=white)&#160;
+![Anthropic Style](https://img.shields.io/badge/Anthropic-Style-191919?style=for-the-badge)&#160;
+![Local Proxy](https://img.shields.io/badge/Local-Proxy-2E7D32?style=for-the-badge)&#160;
+![Windows](https://img.shields.io/badge/Windows-GUI-0078D4?style=for-the-badge&logo=windows&logoColor=white)
+
+</div>
+
+<br>
+
+[Quick Start](#quick-start) · [Problems Solved](#part-2-typical-problems-of-deepseek-v4-and-how-dsplus-solves-them) · [Features](#core-features) · [Technical Docs](#part-3-technical-documentation) · [Security](#security--privacy)
+
+<br>
+</div>
+
+---
+
+## Part 1: DSPlus at a Glance
+
+I really like the DeepSeek V4 series. It is cheap enough and capable enough to have become my daily driver.
+
+But in real-world use — especially in long conversations, roleplay, complex prompts, coding agents, tool calls, and chain-of-thought (CoT) reasoning — it can also expose some stability issues.
+
+If you have run into these situations too, DSPlus can give you a noticeably better experience.
+
+### Common Symptoms
+
+| Instruction Following Decay | Long-Conversation Degradation | Hallucinations & Logic Drift |
+|---|---|---|
+| Format dropouts | Empty output | Fabricated settings |
+| Failed constraints | Lost focus | Confused timeline |
+| Persona drift | Misremembered context | Reversed causality |
+| Uncontrolled length | Safety-mode loop | Wrong numeric judgments |
+
+| CoT Confusion | Coding Agent Anomalies | Tool-Call Issues |
+|---|---|---|
+| Body text leaks into reasoning | Guesses requirements | Tool calls fail |
+| Double reasoning chains | Ignores constraints | Freezes up |
+| English CoT | Empty content | Repeated calls |
+| Confused perspective | Doesn't execute tasks | Stuck in reasoning |
+
+
+
+### A Solution Validated by the Community
+
+> A lot of community practice has shown that there is a simple and effective method: **putting the system prompt after the first message** can significantly reduce hallucinations and improve instruction following.
+>
+> A further approach is to append the system prompt after every message, but that leads to higher token costs and a messy conversation structure.
+>
+> DSPlus found the best approach: through automatic concatenation, it can append the system prompt to **only the last message** — saving tokens while keeping the conversation structure intact.
+
+### What DSPlus Does
+
+DSPlus is a fully local middle layer:
+
+```text
+Your client / IDE / frontend tool
+          ↓
+       DSPlus
+   Local Prompt Guard proxy
+          ↓
+      DeepSeek V4 API
 ```
-原始请求                          DSPlus 重组后
-┌─────────────────────────┐       ┌──────────────────────────────┐
-│ messages: [              │       │ messages: [                  │
-│   {role:"system",        │       │   {role:"user",              │
-│    content:"你是助手"}     │  →    │    content:"Hello           │
-│   {role:"user",          │       │                             │
-│    content:"Hello"}      │       │  <system_prompt>             │
-│ ]                        │       │  你是助手                     │
-└─────────────────────────┘       │  </system_prompt>"}           │
-                                  │ ]                            │
-                                  └──────────────────────────────┘
-                                          ↓ 转发 DeepSeek API
-                                  其余字段(tools/thinking/stream等)完全不变
+
+Its job is to make DeepSeek V4 more stable in complex scenarios:
+
+- Follow the system prompt more reliably
+- Less likely to drop formatting, persona, or constraints
+- Less likely to degrade into empty short replies in long conversations
+- Clearer boundaries between CoT / reasoning_content / body text
+- Fewer empty replies, freezes, and tool-call anomalies in coding agents
+- Automatically intervene, analyze, and retry when reasoning runs too long or gets stuck in a loop
+- Optional intent-confirmation mechanism for some logic errors
+
+### Core Features
+
+| Capability | Summary |
+|---|---|
+| Prompt Guard | Enhances the persistent influence of system prompts, formatting requirements, persona settings, and prohibitions |
+| Instruction-Following Boost | Mitigates rule decay, format dropouts, failed constraints, and persona drift after multiple turns |
+| Long-Conversation Stability | Mitigates empty output, scattered attention, and recent-memory loss after long context |
+| CoT Stabilization | Reduces boundary confusion between reasoning_content, body text, and tool calls |
+| Empty Content Repair | Fixes empty assistant content after tool calls so the IDE can see the reply |
+| Anti-Loop | Detects excessive reasoning, looping reasoning, and truncated output, then analyzes and retries automatically |
+| Intent Confirmation | Experimental feature to mitigate some logic hallucinations, but at a higher token cost |
+| Local GUI | Visual configuration, request logs, tokens, cache hits, retries, and basic diagnostics |
+
+### UI Preview
+
+> Screenshots are in `docs/images/`. Some `.webp` files may be animated demos.
+
+<div align="center">
+
+<table style="border-collapse:separate;border-spacing:5px;margin:0 auto">
+  <tr>
+    <td width="50%" align="center" style="padding:0"><img src="docs/images/DASHBOARD.jpg" alt="DSPlus Dashboard"></td>
+    <td width="50%" align="center" style="padding:0"><img src="docs/images/SETTINGS.jpg" alt="DSPlus Settings"></td>
+  </tr>
+  <tr>
+    <td align="center" style="padding:0"><b>Live Dashboard</b></td>
+    <td align="center" style="padding:0"><b>System Settings</b></td>
+  </tr>
+  <tr>
+    <td width="50%" align="center" style="padding:0"><img src="docs/images/ANALYSIS.jpg" alt="DSPlus Analysis"></td>
+    <td width="50%" align="center" style="padding:0"><img src="docs/images/Classic%20(GitHub%20Dark).jpg" alt="DSPlus Classic Theme"></td>
+  </tr>
+  <tr>
+    <td align="center" style="padding:0"><b>Basic Diagnostic Analysis</b></td>
+    <td align="center" style="padding:0"><b>Classic GitHub Dark Theme</b></td>
+  </tr>
+</table>
+
+<br>
+
+<table style="border-collapse:separate;border-spacing:5px;margin:0 auto">
+  <tr>
+    <td width="50%" align="center" style="padding:0"><img src="docs/images/DASHBOARD.webp" alt="DSPlus Dashboard Demo"></td>
+    <td width="50%" align="center" style="padding:0"><img src="docs/images/PixPin_2026-07-07_19-43-25.webp" alt="DSPlus Demo"></td>
+  </tr>
+  <tr>
+    <td align="center" style="padding:0"><b>Animated Demo 1</b></td>
+    <td align="center" style="padding:0"><b>Animated Demo 2</b></td>
+  </tr>
+</table>
+
+</div>
+
+### Before / After
+
+A qualitative comparison of what DSPlus changes. Quantitative benchmarks are being built (see Roadmap).
+
+| Scenario | Without DSPlus | With DSPlus |
+|---|---|---|
+| Unsupported citation / fact request | Invents sources, papers, links | Prompt Guard strengthens constraints, fewer unsupported claims |
+| Long conversation | Persona / setting drift, empty or short output | Reorganized system prompt keeps behavioral boundaries |
+| After tool call | `content: ""`, IDE shows nothing | Empty content auto-repaired, breaks the silent-reply loop |
+| Coding agent | Ignores constraints, repeats calls, freezes | Stage-aware injection; Anti-Loop retry on stuck reasoning |
+| Reasoning loop | Re-verifies same conclusion, truncated by max_tokens | Anti-Loop captures → analyzes → retries with guidance |
+| Logic drift | Treats unspoken things as facts | Intent confirmation (experimental) re-aligns before answering |
+
+### Quick Start
+
+> DSPlus is fundamentally a local HTTP proxy. It **runs without the GUI** and needs **no prebuilt EXE**: it is just a Go program you can run from source or compile into an executable for any platform. The GUI is only an optional web dashboard on the same port (see [Startup Methods](#startup-methods)).
+
+Run (either one):
+
+```batch
+go run .                 # run from source, no build needed
+go build -o dsplus .     # build an executable for your platform (dsplus.exe on Windows)
+./dsplus                 # run the built binary
 ```
 
-**支持两种 API 格式：**
+Default address:
 
-| 格式 | 识别特征 | 转发目标 |
-|------|---------|---------|
-| OpenAI | `messages` 数组含 `role: "system"` | `https://api.deepseek.com` |
-| Anthropic | 顶层 `system` 字段 或 含 `max_tokens` 且无系统 role | `https://api.deepseek.com/anthropic` |
-
-## 项目结构
-
+```text
+http://127.0.0.1:8188
 ```
+
+Then change the API Base URL in your client to:
+
+```text
+http://127.0.0.1:8188
+```
+
+Fill in your DeepSeek API Key on the DSPlus settings page.
+
+---
+
+## Part 2: Typical Problems of DeepSeek V4 and How DSPlus Solves Them
+
+DeepSeek V4 is a very capable and very cheap model. DSPlus is not designed to deny that, but to enhance its high-frequency stability problems in complex real-world scenarios through a local proxy layer.
+
+### 1. Weak Instruction Following
+
+This is the most frequent problem.
+
+#### Typical Symptoms
+
+- Format dropouts
+- Failed constraints
+- Forgotten persona
+- Uncontrolled length
+- Rule decay after multiple turns
+- First-turn style polluting later output
+
+#### How DSPlus Solves It
+
+Before a request reaches DeepSeek V4, DSPlus reorganizes the system prompt and extra rules so that key constraints more reliably enter the model's effective context.
+
+Three strategies are supported:
+
+| Strategy | Suitable For |
+|---|---|
+| After the first user message | Default mode, balances stability with cache hits |
+| After the last user message | Emphasizes the latest constraints; good for short context or strong-control scenarios |
+| No modification | Keeps the original request structure and only uses other enhancement capabilities |
+
+It also supports injecting an extra high-priority prompt, which can be used for:
+
+- Fixed output format
+- Persona settings
+- Prohibited items
+- Global behavior guidelines
+- Project-level conventions
+- Coding Agent work rules
+
+### 2. Context and Long-Conversation Degradation
+
+Long conversations are among the most common problems for DeepSeek V4 users.
+
+#### Typical Symptoms
+
+- Lower information density
+- Shorter, emptier output
+- Scattered attention
+- Recent-memory loss
+- Persona and setting drift
+- Falling into rigid safety mode
+- Overly strong first-turn output inertia
+
+#### How DSPlus Solves It
+
+DSPlus does not break the model's own context limit, but it tries to reduce the behavioral drift caused by long conversations.
+
+It does so through:
+
+- Reorganizing the system prompt
+- Strengthening global constraints
+- Controlling the thinking parameter
+- Controlling max_tokens
+- Fixing CoT / content boundaries
+- Triggering Anti-Loop on abnormal reasoning
+
+to help DeepSeek V4 maintain more stable behavioral boundaries in long context.
+
+### 3. CoT / Reasoning-Chain Confusion
+
+Reasoning models easily develop confused boundaries between reasoning_content and body text in tool calls, multi-turn history, and complex clients.
+
+#### Typical Symptoms
+
+- Body text written into the reasoning chain
+- Double reasoning chains
+- English CoT
+- Reasoning-chain hallucinations
+- Confused reasoning-chain perspective
+- Client cannot see the formal reply
+
+#### How DSPlus Solves It
+
+DSPlus provides several CoT-related fixes:
+
+| Feature | Effect |
+|---|---|
+| reasoning_content auto-completion | Reduces tool-call format compatibility issues |
+| Empty content auto-repair | Backfills the most recent empty assistant content with reasoning |
+| thinking mode control | Optionally leave unset, force off, or force on thinking |
+| Independent retry thinking config | Set thinking and effort separately on Anti-Loop retries |
+| Streaming capture | Captures reasoning / content to judge whether something is abnormal |
+
+Empty content repair is important for coding agents.
+
+Some IDEs or agent clients do not display reasoning_content. If `content: ""` keeps appearing in history, the model may imitate this pattern, causing persistent empty replies afterward. DSPlus can break this feedback loop from the request side.
+
+### 4. Coding Agent and Tool-Call Anomalies
+
+In tools like Claude Code, OpenCode, the OpenAI SDK, and Anthropic-style clients, DeepSeek V4's problems become more pronounced, because these scenarios demand more of formatting, tool calls, state management, and instruction following.
+
+#### Typical Symptoms
+
+- Tool calls fail
+- Freezes after tool return
+- Repeated calls to the same tool
+- Keeps analyzing when it should execute
+- Empty content causes no IDE output
+- Guesses files, guesses requirements, ignores constraints
+- CoT and body text misaligned after tool calls
+
+#### How DSPlus Solves It
+
+DSPlus identifies different stages such as conversation, tool calls, and tool returns, and tries to avoid injecting inappropriate content during the tool-return stage, reducing the risk of breaking the client's protocol structure.
+
+At the same time, it improves stability in coding agents through:
+
+- Prompt Guard
+- Empty content repair
+- reasoning_content compatibility
+- Anti-Loop
+- Request logs and token tracking
+
+### 5. Hallucinations and Logic Drift
+
+Logic hallucinations are a harder problem. DSPlus currently optimizes the first three categories — instruction following, long-conversation degradation, and CoT confusion — more noticeably.
+
+For logic hallucinations, DSPlus provides an experimental intent-confirmation mechanism.
+
+#### Typical Symptoms
+
+- Fabricated settings
+- Confused timeline
+- Reversed causality
+- Wrong numeric judgments
+- Wrong character position
+- Treating things the user never said as facts
+
+#### Intent Confirmation Mechanism
+
+Intent confirmation re-injects the latest user intent after the model finishes thinking and before it outputs the formal answer, so the model re-aligns with the current question one last time before the final output.
+
+It may mitigate:
+
+- Going off topic
+- Context drift
+- Some logic drift
+- Some hallucination-type errors
+
+But it also has a clear cost:
+
+```text
+Token consumption may nearly double.
+```
+
+So it is not a default recommended feature, and is better suited for scenarios where accuracy is the priority and higher cost is acceptable.
+
+### 6. Anti-Loop (Infinite Thinking Prevention)
+
+DeepSeek V4 sometimes stays in the reasoning stage for a long time on complex tasks.
+
+#### Typical Symptoms
+
+- Keeps reasoning, never outputs body text
+- Repeatedly verifies the same conclusion
+- Overly cautious, afraid to proceed
+- Output truncated by length / max_tokens
+- Keeps analyzing in coding agents, never executes tasks
+
+#### How DSPlus Solves It
+
+Anti-Loop will:
+
+1. Capture streaming or non-streaming responses.
+2. Record reasoning, content, and finish_reason.
+3. Start analysis when a threshold is reached or output is truncated.
+4. Judge whether it is a loop, excessive, or normal.
+5. Construct a retry request with guidance.
+6. Use an independent retry model and thinking config.
+7. Return a clear fallback message if it exceeds the limit again.
+
+---
+
+## Part 3: Technical Documentation
+
+This part is for power users, developers, and anyone who needs to audit / deploy / build it themselves.
+
+### How It Works
+
+DSPlus is a local HTTP proxy. It receives client requests, enhances them per configuration, and forwards them to the DeepSeek API.
+
+```text
+Client request
+  ↓
+Format detection
+  ↓
+Semantic stage recognition
+  ↓
+System Prompt reorganization
+  ↓
+Extra Prompt injection
+  ↓
+thinking / max_tokens parameter handling
+  ↓
+reasoning_content / empty content repair
+  ↓
+Forward to DeepSeek API
+  ↓
+Streaming capture and logging
+  ↓
+Optional Anti-Loop / intent confirmation / auto retry
+  ↓
+Return to client
+```
+
+### Supported API Styles
+
+| Style | Recognition | Default Upstream |
+|---|---|---|
+| OpenAI style | `messages` array, `role` field, `/chat/completions` path | `https://api.deepseek.com` |
+| Anthropic style | Top-level `system`, `/v1/messages`, compatible message structure | `https://api.deepseek.com/anthropic` |
+
+DSPlus tries to transparently pass through unrecognized or unmodified requests.
+
+### Project Structure
+
+```text
 DSPlus/
-├── main.go             # 程序入口，启动代理服务 + 打开 GUI 窗口
-├── config.go           # 配置结构体定义、JSON 文件读写
-├── transform.go        # System Prompt 重组核心逻辑（OpenAI + Anthropic 双格式）
-├── proxy.go            # HTTP 代理核心：请求拦截 → 格式检测 → 转换 → 转发 + 防循环引擎
-├── retry.go            # 防思维循环：子Agent分析、并行检测、重试构建、启发式判定
-├── logger.go           # 环形缓冲区请求日志、Token 统计、WebSocket 广播
-├── trace.go            # 文件追踪日志（antiloop_trace.log），双写到控制台+文件
-├── gui.go              # 内嵌 Web 前端 + 内部 REST/WebSocket API
-├── ws.go               # WebSocket 实时推送管理
-├── gui_webview.go      # 内嵌 WebView2 窗口（需 CGO 编译）
-├── gui_fallback.go     # 非 CGO 回退：打开系统默认浏览器
+├── main.go              # Program entry, service start, restart, GUI open
+├── config.go            # Config structure, defaults, language detection, safe read/write
+├── transform.go         # System Prompt reorganization, supports OpenAI / Anthropic styles
+├── proxy.go             # HTTP proxy core, request handling, parameter injection, streaming forward
+├── retry.go             # Anti-Loop analysis, guided retry, retry request construction
+├── analysis.go          # Session analysis, Session / Turn aggregation, Markdown export
+├── logger.go            # Real-time logs, token stats, WebSocket broadcast
+├── trace.go             # Anti-loop trace log
+├── gui.go               # Web GUI and internal REST API
+├── gui_webview.go       # WebView2 desktop window and tray in CGO mode
+├── gui_fallback.go      # Browser fallback in non-CGO mode
+├── ws.go                # WebSocket real-time push
 ├── web/
-│   └── index.html      # 单文件 SPA 前端（仪表盘 + 设置页，暗色主题）
-├── antiloop_trace.log  # 防循环追踪日志（自动生成在 exe 同目录）
-├── go.mod / go.sum     # Go 模块依赖
-├── build.bat           # Windows 一键编译脚本
-└── README.md           # 本文档
+│   ├── index_v2.html    # Current main UI
+│   ├── app_v2.js        # Frontend business logic
+│   ├── index_v2.css     # Main styles
+│   ├── theme_yorha.css  # YoRHa theme
+│   ├── theme_classic.css# Classic theme
+│   ├── i18n.js          # Internationalization logic
+│   └── locales/         # zh / en language files
+├── docs/                # Design docs, specs, and issue records
+├── docs/images/         # README screenshots and demo images
+├── go.mod / go.sum      # Go module dependencies
+├── build.bat            # Windows build script
+└── README.md            # Current document
 ```
 
-### Go 文件职责
+### Startup Methods
 
-| 文件 | 关键类型/函数 | 说明 |
-|------|-------------|------|
-| `config.go` | `Config`, `LoadConfig()`, `SaveConfig()` | 配置 JSON 持久化，自动放在 exe 同目录 |
-| `transform.go` | `transformOpenAIInPlace()`, `transformAnthropicInPlace()` | 将 system prompt 拼入首条 user message |
-| `proxy.go` | `ProxyServer`, `forwardStreamWithAntiLoop()`, `injectThinkingParams()`, `injectMaxTokens()` | HTTP 代理 + 防循环流引擎 + 参数注入 |
-| `retry.go` | `AntiLoopAnalysis`, `callAntiLoopAnalyzerWith()`, `parallelAnalyze()`, `executeAndStreamRetry()` | 子Agent分析、并行检测、重试执行 |
-| `logger.go` | `Logger`, `LogEntry`, `TokenUsage`, `UpdateTokenUsage()` | 内存环形缓冲日志，WS 广播 |
-| `trace.go` | `trace()`, `traceKeyvals()`, `tracelog()` | 文件追踪日志，自动双写到控制台+antiloop_trace.log |
-| `gui.go` | `handleGUI`, REST API 处理器 | 前端服务 + 配置 API |
-| `ws.go` | `wsHub`, `handleWebSocket()` | 实时日志推送 |
-| `main.go` | `main()` | 启动所有服务 |
+DSPlus is a Go-based local proxy. It **needs no prebuilt EXE and can run as a proxy without the GUI**. The GUI is only an optional web dashboard on the same port (`http://127.0.0.1:8188/`) — proxying does not depend on it.
 
-## 功能特性
-
-### System Prompt 重组
-
-DSPlus 将 System Prompt 拼接到用户消息中，支持三种模式：
-
-| 模式 | 拼接位置 | 缓存表现 | 适用场景 |
-|------|---------|---------|---------|
-| **第一条用户消息后**（默认） | 拼入首条 `role:"user"` 尾部 | 缓存友好 | 日常使用、长对话 |
-| **最后一条用户消息后** | 拼入最后一条 `role:"user"` 尾部 | 缓存不友好 | 第一条消息特别简短时 |
-| **不修改** | 不拼接，System Prompt 保持原样 | 无影响 | 不想修改请求结构时 |
-
-**额外 Prompt 注入** 与 System Prompt 重组完全独立。两者注入到同一条用户消息时，顺序固定为：原始内容 → `<system_prompt>` → `<supreme_instruction>`。
-
-### Max Tokens 输出限制
-
-限制模型最大输出 Token 数，防止复杂问题时陷入超长思考：
-
-| 选项 | 行为 |
-|------|------|
-| 不修改 | 不注入 `max_tokens`，由客户端或模型自行决定 |
-| 5000 | 硬限制 5000 tokens |
-| 32000 | 硬限制 32000 tokens |
-| 自定义 | 手动输入任意值 |
-
-### 思考模式控制（三态）
-
-| 设置 | 行为 |
-|------|------|
-| 不设置 | 请求原样透传，不注入 thinking 参数 |
-| 强制关闭思考 | 覆盖写入 `{"thinking":{"type":"disabled"}}` |
-| 强制启动思考 | 覆盖写入 `{"thinking":{"type":"enabled"}}` + `reasoning_effort` |
-
-### 请求日志与实时更新
-
-*   **物理行为与系统干预分离**：
-    *   **行为列**：表格第二列展示纯正的物理网络会话动作性质（🔵 **对话开始**、🟢 **完成对话**、🟡 **工具调用**、🟣 **工具回传**、🟠 **调用回传**）。
-    *   **干预事件列**：系统运行过程中的重试、分析或安全操作集中归入最后一列（如：`思考完成`（防幻觉拦截）、`思维修正`、`防循环分析`、`防循环重试`、`Debug`），实现网络动作与系统干预的彻底解耦。
-*   **还原真实的 API 路由**：对于防循环分析、重试等子阶段 API 调用，直接展示物理接口端点，不再使用硬编码括号备注。
-*   **无闪烁局部增量更新**：高频流式输出时采用 DOM 局部增量刷新技术，杜绝了悬停 Token 信息提示时的闪烁抖动，并保障流式过程中点击整行唤起详情抽屉的 100% 灵敏度。
-*   **WebSocket 实时广播**：日志与 Token 详细统计通过 WS 管道实时主动渲染。
-*   **交互抽屉**：点击行即刻滑出抽屉，无损解析展示该轮次的请求体与响应细节。
-
-### Token 统计
-
-鼠标悬停 Token 列可查看详细拆解：输入/输出/缓存命中/未命中。
-
-| 缓存状态 | 显示 | 含义 |
-|---------|------|------|
-| `cache_hit == 0` | 蓝色 `new` | 全新上下文 |
-| `< 35%` | 灰色 | 低缓存命中 |
-| `35% ~ 74%` | 黄色 | 中等缓存命中 |
-| `≥ 75%` | 绿色 | 高缓存命中 |
-
-## 防思维循环
-
-防思维循环是 DSPlus 的核心智能�┌────────────────────────────────────────────────────────────────────────────────────────┐
-│  🟢 运行中  端口:8188  总请求:128  今日:15                                             │
-├────────┬──────────┬──────┬──────────┬──────┬──────┬──────┬─────┬──────────────────┬────────┤
-│ 时间   │ 行为     │ 格式 │ 流式     │ 重组 │ 状态 │ 延迟 │Token│ 端点             │干预事件│
-├────────┼──────────┼──────┼──────────┼──────┼──────┼──────┼─────┼──────────────────┼────────┤
-│ 14:32  │ 对话开始 │OpenAI│   ★是    │  ★是 │ 200  │ 1.2s │ 415 │/v1/chat/completions│ --     │
-│ 14:31  │ --       │OpenAI│   --     │  -   │ 200  │ 0.3s │  50 │/v1/chat/completions│防循环分析│
-│ 14:30  │ 完成对话 │OpenAI│   ★是    │  -   │ 200  │ 8.2s │ 320 │/v1/chat/completions│防循环重试│
-│ 14:29  │ --       │ --   │   --     │  -   │  -   │  0ms │3120 │--                │  Debug │
-└────────┴──────────┴──────┴──────────┴──────┴──────┴──────┴─────┴──────────────────┴────────┘
-```
-
-*   **行为列**：呈现纯正的客户端/模型交互行为（`对话开始`、`完成对话`、`工具调用`、`工具回传`、`调用回传`）。
-*   **端点列**：直接呈现所请求的原版 API 接口地址，不再附加修饰括号。
-*   **重组列**：绿色 `是` = 执行了 System Prompt 重组。
-*   **Token 列**：总 Token 数，鼠标悬浮可实时读取 输入/输出/缓存 详细拆解值（增量刷新机制，无抖动闪烁）。
-*   **干预事件列**：独立呈现系统辅助和异常干预指标（如 `思考完成`、`思维修正`、`防循环分析`、`防循环重试`、`Debug`）。
-*   **点击行**：随时点击列表任意行，右侧即刻无损弹出该 Turn 的详尽分析抽屉。�� 启动并行分析器 ──────┘（goroutine，不中断流）
-      │     └─ 判定: loop/excessive → 主动停止 + 重试
-      │        normal → 继续流式
-      │
-  finish_reason="length"?
-      └─ 兜底分析 → 重试
-
-重试时:
-  - 重试请求包含 Phase 1 全部输出 + 思考过程 + 分析指导
-  - 使用独立配置的模型、思考模式、思考强度
-  - 若重试再次截断 → 返回固定提示
-```
-
-### 重试请求结构
-
-重试请求继承原始对话的完整上下文，并追加：
-
-```
-messages: [
-  ...原始 messages...,
-  {role: "assistant", content: "<Phase1 被截断的输出>"},     // 模型已输出的内容
-  {role: "user", content: "推理被中断 — 检测到excessive      // 分析指导
-                          请从断点继续，不要重复..."}
-]
-
-model: 使用 antiloop_retry_model 配置
-thinking: 使用 antiloop_retry_thinking + antiloop_retry_effort 配置
-max_tokens: 已移除（给重试完整空间）
-```
-
-### 相关设置
-
-| 配置项 | 默认值 | 说明 |
-|--------|--------|------|
-| 防思维循环 | 关闭 | 总开关 |
-| 重试模型 | `deepseek-v4-flash` | 重试时使用的模型（flash 快速 / pro 强力） |
-| 重试时启用思考 | 不启用 | 重试时是否开启思考模式 |
-| 重试思考强度 | high | 重试时的推理强度（启用思考时生效） |
-| 检测触发Token数 | 0 | 达到后并行分析。0=关闭主动检测，仅依赖 `finish_reason=length` 兜底 |
-
-### 调试
-
-开启「Debug 模式」后，仪表盘会出现 🐛 **Debug** 标签的日志条目，实时显示：
-- `completion_tokens`（API 返回的真实值）
-- `estimated_tokens`（字符数估算值）
-- `reasoning_chars` / `content_chars`（思考/内容字符数）
-- 触发状态、阈值对比
-
-所有防循环关键事件自动写入 `antiloop_trace.log`（exe 同目录），无需查看控制台。
-
-## 快速开始
-
-### 1. 启动 DSPlus
+#### Run directly from source (no EXE)
 
 ```batch
-DSPlus.exe                          # 默认端口 8188
-DSPlus.exe --port=9999              # 自定义端口
-# GUI 始终默认打开（已移除 --no-gui 和设置中的关闭选项）
+go run .
 ```
 
-启动后自动弹出 GUI 窗口（仪表盘页面）。
-
-### 2. 配置 API Key
-
-1. 点击顶部导航「设置」
-2. 填入 DeepSeek API Key（从 https://platform.deepseek.com/api_keys 获取）
-3. 按需调整监听端口、上游地址
-4. 点击「保存配置」
-
-### 3. 接入工具
-
-将工具的 API 地址指向 `http://127.0.0.1:<端口>`：
-
-**Claude Code / Anthropic SDK：**
+#### Build it yourself (any platform)
 
 ```batch
-set ANTHROPIC_BASE_URL=http://127.0.0.1:8188
-set ANTHROPIC_AUTH_TOKEN=any-value
+go build -o dsplus .     # generates dsplus.exe on Windows
+./dsplus                 # Linux / macOS
+dsplus.exe               # Windows
 ```
 
-**OpenAI SDK / OpenCode：**
+> The `DSPlus.exe` in the repo is just a prebuilt Windows example; you can `go build` an executable for your own platform with any name.
+
+#### Three run modes
+
+| Mode | Build | GUI behavior | When to use |
+|---|---|---|---|
+| Desktop GUI (embedded window) | `CGO_ENABLED=1 go build ...` | Auto-opens a WebView2 window; closes to tray | Windows desktop, want visual config |
+| Desktop GUI (browser) | `CGO_ENABLED=0 go build ...` | Auto-opens your default browser to the dashboard | No CGO toolchain, still want GUI |
+| Pure proxy / headless | Same, just run the binary | The GUI dashboard is an optional page on the same port — **not opening it does not affect proxying**; on headless environments (server / container) the GUI simply does not open | Server, CI, transparent proxy only |
+
+In every mode the proxy listens and forwards on `http://127.0.0.1:8188`; the GUI is just an extra observability / configuration entry point.
+
+### Quick Start
+
+#### 1. Start DSPlus
+
+```batch
+dsplus                  # or dsplus.exe; or just go run .
+```
+
+Default listen address:
+
+```text
+http://127.0.0.1:8188
+```
+
+Specify a port:
+
+```batch
+DSPlus.exe --port=9999
+```
+
+The local GUI opens automatically after startup.
+
+#### 2. Configure the DeepSeek API Key
+
+Open the GUI, go to "System Settings", and fill in the DeepSeek API Key.
+
+The API Key is only saved locally in `config.json`.
+
+#### 3. Change the Client Base URL
+
+Change the client API address to:
+
+```text
+http://127.0.0.1:8188
+```
+
+The actual request is forwarded to the DeepSeek API by DSPlus.
+
+### Client Integration Examples
+
+#### OpenAI SDK / OpenAI-style Client
 
 ```python
+from openai import OpenAI
+
 client = OpenAI(
     api_key="any-value",
     base_url="http://127.0.0.1:8188"
 )
 ```
 
-**Cherry Studio / ChatBox 等客户端：**
-
-在 API 设置中将地址改为 `http://127.0.0.1:8188`，API Key 填任意值即可。
-
-## 编译构建
-
-### 方式一：无 CGO（浏览器 GUI）
-无需安装 C 编译器，GUI 使用系统默认浏览器打开。
+#### Anthropic-style Client
 
 ```batch
-cd /d F:\"AI code"\DSPlus
+set ANTHROPIC_BASE_URL=http://127.0.0.1:8188
+set ANTHROPIC_AUTH_TOKEN=any-value
+```
+
+#### Cherry Studio / ChatBox / Open WebUI
+
+Fill in the API settings:
+
+```text
+API Base URL: http://127.0.0.1:8188
+API Key: any value or the placeholder required by the client
+```
+
+The DeepSeek API Key is configured on the DSPlus settings page.
+
+### Main Configuration Items
+
+The config file is in the same directory as `DSPlus.exe`:
+
+```text
+config.json
+```
+
+| Field | Description |
+|---|---|
+| `api_key` | DeepSeek API Key, saved locally |
+| `port` | Local listen port, default 8188 |
+| `lan_access` | Whether to allow LAN / WSL access |
+| `openai_upstream` | OpenAI-style upstream address |
+| `anthropic_upstream` | Anthropic-style upstream address |
+| `language` | GUI language, supports zh / en |
+| `thinking_mode` | Unset, force thinking off, or force thinking on |
+| `reasoning_effort` | Reasoning intensity, e.g. high / max |
+| `system_prompt_placement` | System Prompt concatenation position, first / last / none |
+| `extra_prompt` | Extra high-priority instruction |
+| `extra_prompt_placement` | Extra Prompt injection position, first / last / none |
+| `max_tokens_mode` | No change, 5000, 32000, or custom |
+| `max_tokens_custom` | Custom max_tokens value |
+| `auto_reasoning_content` | Auto-complete reasoning_content |
+| `auto_fix_empty_content` | Auto-repair empty assistant content |
+| `anti_loop_enabled` | Whether to enable Anti-Loop |
+| `antiloop_retry_model` | Anti-Loop retry model |
+| `antiloop_retry_thinking` | Whether to enable thinking on retry |
+| `antiloop_retry_effort` | Reasoning intensity on retry |
+| `antiloop_check_tokens` | Active loop-detection threshold, 0 means only rely on truncation fallback |
+| `anti_hallucination_enabled` | Whether to enable experimental intent confirmation |
+| `anti_hallucination_prompt` | Intent-confirmation prompt template |
+| `analysis_enabled` | Whether to enable local analysis records |
+| `analysis_retention_days` | Analysis log retention days |
+| `verbose_logging` | Whether to keep detailed request / response content in real-time logs |
+| `debug_mode` | Whether to enable debug information |
+
+### Local API Endpoints
+
+DSPlus serves both the proxy and GUI on a single port.
+
+| Path | Purpose |
+|---|---|
+| `/chat/completions` | OpenAI-style proxy entry |
+| `/v1/chat/completions` | OpenAI-style proxy entry |
+| `/v1/messages` | Anthropic-style proxy entry |
+| Other non-GUI paths | Pass through to the corresponding upstream by format |
+| `/` | Local GUI home |
+| `/api/status` | Service status |
+| `/api/logs` | Real-time request logs, supports `limit` / `offset` |
+| `/api/logs/{id}` | Single request detail |
+| `/api/config` | Get / save config |
+| `/api/restart` | Restart local service |
+| `/api/analysis/status` | Analysis service status |
+| `/api/analysis/sessions` | Analysis session list |
+| `/api/analysis/sessions/{id}` | Session detail |
+| `/api/analysis/sessions/{id}/timeline` | Session timeline pagination |
+| `/api/analysis/sessions/{id}/export.md` | Export Markdown diagnostic report |
+| `/ws` | WebSocket real-time log push |
+
+### Build
+
+This project is developed in Go.
+
+#### No CGO Build
+
+No C compiler needed; the GUI opens in a browser.
+
+```batch
 set CGO_ENABLED=0
 go build -ldflags="-s -w" -o DSPlus.exe .
 ```
 
-生成 ~10MB 的 `DSPlus.exe`。
+#### CGO Build
 
-### 方式二：CGO 启用（内嵌 WebView 窗口）
-需要安装 MinGW（推荐 [WinLibs](https://winlibs.com/)）。
+Requires an available C compilation environment, e.g. MinGW. The build then supports the embedded WebView2 window and tray behavior.
 
 ```batch
-cd /d F:\"AI code"\DSPlus
 set CGO_ENABLED=1
 go build -ldflags="-H windowsgui -s -w" -o DSPlus.exe .
 ```
 
-`-H windowsgui` 使 exe 启动时不显示命令行黑窗，直接弹出桌面窗口。
+#### Test
 
-### 依赖
-
-| 包 | 用途 |
-|---|------|
-| `github.com/gorilla/websocket` | WebSocket 实时推送 |
-| `github.com/webview/webview_go` | 内嵌桌面窗口（CGO 模式） |
-
-## GUI 使用说明
-
-### 仪表盘页面
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│  🟢 运行中  端口:8188  总请求:128  今日:15                   │
-├────────┬──────────┬──────┬──────┬──────┬─────┬─────┬─────────┤
-│ 时间   │ 格式     │ 重组 │ 状态 │ 延迟 │Token│缓存 │ 端点    │
-├────────┼──────────┼──────┼──────┼──────┼─────┼─────┼─────────┤
-│ 14:32  │ OpenAI   │ ★是  │ 200  │ 1.2s │ 415 │ 75% │ /chat   │
-│ 14:31  │ 🔍 分析器 │  -   │ 200  │ 0.3s │  50 │  -  │ /分析   │
-│ 14:30  │ 🔄 重试   │  -   │ 200  │ 8.2s │ 320 │  -  │ /重试   │
-│ 14:29  │ 🐛 Debug  │  -   │5000  │  0ms │3120 │  -  │ /tokens │
-└────────┴──────────┴──────┴──────┴──────┴─────┴─────┴─────────┘
+```batch
+go test ./...
 ```
 
-- **格式列**：五种徽章颜色区分请求类型
-- **重组列**：绿色 `是` = 执行了 System Prompt 重组
-- **Debug 行**：状态码 = 阈值，Token 列 = 有效 Token 数，悬停看拆解
-- **点击行**：展开完整请求/响应细节
+Run a specific test:
 
-### 设置页面
-
-| 配置项 | 默认值 | 说明 |
-|--------|--------|------|
-| API Key | 空 | DeepSeek API Key，仅存本地 |
-| 监听端口 | 8188 | 修改后需重启 |
-| OpenAI 上游 | `https://api.deepseek.com` | OpenAI 格式转发目标 |
-| Anthropic 上游 | `https://api.deepseek.com/anthropic` | Anthropic 格式转发目标 |
-| 思考模式 | 强制启动思考 | 强制关闭 / 强制启动 / 不设置 |
-| 思考强度 | max | 仅在强制启动时生效 |
-| Max Tokens | 不修改 | 不修改 / 5000 / 32000 / 自定义 |
-| 拼接位置 | 第一条用户消息后 | 第一条后 / 最后一条后 / 不修改 |
-| 额外 Prompt 位置 | 最后一条后 | 不添加 / 第一条后 / 最后一条后 |
-| 额外 Prompt | 内置 Prompt | 最高优先级指令（首次启动自动填充） |
-| **防思维循环** | 关闭 | 总开关 |
-| ├ 重试模型 | `deepseek-v4-flash` | 重试时使用 |
-| ├ 重试时启用思考 | 不启用 | 重试思考开关 |
-| ├ 重试思考强度 | high | 启用时生效 |
-| └ 检测触发Token数 | 0 | 主动检测阈值 |
-| 详细记录 | 开启 | 完整记录请求/响应体 |
-| Debug 模式 | 关闭 | 实时 Token 追踪数据 |
-
-## API 端点
-
-DSPlus 单端口复用，同时提供代理和 GUI 服务：
-
-| 路径 | 用途 |
-|------|------|
-| `/chat/completions` | OpenAI 格式代理入口 |
-| `/v1/messages` | Anthropic 格式代理入口 |
-| 其他路径 | 透传转发至对应上游 |
-| `/` | GUI 仪表盘 |
-| `/api/status` | 服务状态 JSON |
-| `/api/logs` | 请求日志列表（支持 `?limit=&offset=`） |
-| `/api/logs/{id}` | 单条日志详情 |
-| `/api/config` | 获取/更新配置 |
-| `/ws` | WebSocket 实时推送 |
-
-### 格式检测规则
-
-代理通过结构化解析请求体自动判断格式：
-
-- 包含顶层 `"system"` 字段 → **Anthropic 格式**（优先）
-- 包含 `"messages"` 且含 `"max_tokens"` 但不含 `role:"system"` → **Anthropic 格式**
-- 包含 `"messages"` 且不满足上述条件 → **OpenAI 格式**
-- 不满足以上 → 直接透传
-
-## 配置说明
-
-配置文件 `config.json` 自动生成在 `DSPlus.exe` 同目录：
-
-```json
-{
-  "api_key": "sk-xxxxxxxxxxxxxxxx",
-  "port": 8188,
-  "openai_upstream": "https://api.deepseek.com",
-  "anthropic_upstream": "https://api.deepseek.com/anthropic",
-  "verbose_logging": true,
-  "thinking_mode": "enabled",
-  "reasoning_effort": "max",
-  "system_prompt_placement": "first",
-  "extra_prompt": "# 在你的思考过程（<think>标签内）中，请遵守以下规则：\n...",
-  "extra_prompt_placement": "last",
-  "max_tokens_mode": "",
-  "max_tokens_custom": 0,
-  "anti_loop_enabled": false,
-  "antiloop_retry_model": "deepseek-v4-flash",
-  "antiloop_retry_thinking": "",
-  "antiloop_retry_effort": "high",
-  "antiloop_check_tokens": 0,
-  "debug_mode": false
-}
+```batch
+go test -v -run TestTransformOpenAIInPlace ./...
 ```
 
-| 字段 | 类型 | 默认 | 说明 |
-|------|------|------|------|
-| `api_key` | string | - | DeepSeek API Key（必填） |
-| `port` | int | 8188 | 监听端口 |
-| `openai_upstream` | string | `https://api.deepseek.com` | OpenAI 格式上游 |
-| `anthropic_upstream` | string | `https://api.deepseek.com/anthropic` | Anthropic 格式上游 |
-| `verbose_logging` | bool | true | 完整记录请求/响应体 |
-| `thinking_mode` | string | `"enabled"` | `""` / `"disabled"` / `"enabled"` |
-| `reasoning_effort` | string | `"max"` | `"high"` / `"max"` |
-| `system_prompt_placement` | string | `"first"` | `"first"` / `"last"` / `"none"` |
-| `extra_prompt` | string | 内置 Prompt | 额外最高优先级指令 |
-| `extra_prompt_placement` | string | `"last"` | `"first"` / `"last"` / `"none"` |
-| `max_tokens_mode` | string | `""` | `""` / `"5000"` / `"32000"` / `"custom"` |
-| `max_tokens_custom` | int | 0 | 自定义 max_tokens 值 |
-| `anti_loop_enabled` | bool | false | 防思维循环总开关 |
-| `antiloop_retry_model` | string | `"deepseek-v4-flash"` | 重试模型 |
-| `antiloop_retry_thinking` | string | `""` | `""` / `"enabled"` / `"disabled"` |
-| `antiloop_retry_effort` | string | `"high"` | `"high"` / `"max"` |
-| `antiloop_check_tokens` | int | 0 | 主动检测阈值（0=关闭） |
-| `debug_mode` | bool | false | 实时 Token 追踪 + 文件日志 |
+### Security & Privacy
 
-## 注意事项
+DSPlus is a local proxy, but it processes your complete request and response content. Configure the logging options according to your own privacy needs.
 
-1. **API Key 安全**：API Key 明文存储在 `config.json`，请勿分享或提交到版本控制
-2. **端口冲突**：如 8188 被占用，可通过 `--port` 或设置页修改
-3. **HTTPS**：DSPlus 仅监听 HTTP。工具本身通过 HTTPS 连接 DeepSeek 上游
-4. **日志内存**：最多保留 2000 条日志在内存中，重启清空
-5. **防循环成本**：每次重试会额外消耗 API 调用（分析器 + 重试请求），建议按需开启
-6. **追踪日志**：`antiloop_trace.log` 每次启动追加写入，建议定期清理
-7. **思考模式**：强制模式会覆盖请求中原有的 thinking 参数
+| Item | Description |
+|---|---|
+| API Key | Saved locally in `config.json`; do not commit to public repos |
+| Request content | May contain private data, business data, code, or prompts |
+| verbose_logging | When on, GUI request details keep more complete request / response content |
+| analysis_enabled | When on, generates local analysis history for session viewing and export |
+| LAN Access | When on, listens on `0.0.0.0`; only recommended on trusted networks |
+| Log files | Anti-loop traces and analysis history may be written to local files; clean them periodically |
 
----
+Suggestions:
 
-💬 **LINUX DO** - 一个活跃的技术社区
+- Do not commit `config.json`
+- Do not expose log files and analysis reports
+- Do not enable LAN access on untrusted networks
+- Before sharing screenshots, check for API Keys, private code, customer info, or private prompts
 
-👉 https://linux.do/
+### Transparency and Auditability
+
+DSPlus's core logic is concentrated in a small number of Go files, making it easy to audit.
+
+| Capability | Main Files |
+|---|---|
+| System Prompt reorganization | `transform.go` |
+| Request proxy and parameter injection | `proxy.go` |
+| Anti-Loop and retry | `retry.go` |
+| Config and defaults | `config.go` |
+| Logging and real-time updates | `logger.go`, `ws.go` |
+| Session analysis and export | `analysis.go` |
+| GUI and internal API | `gui.go`, `web/` |
+
+You can read these files directly to confirm what DSPlus does and does not do.
+
+### Current Limitations
+
+- DSPlus does not replace DeepSeek V4.
+- DSPlus does not break the model's own context window.
+- DSPlus does not connect to the internet for fact-checking.
+- DSPlus does not guarantee complete elimination of hallucinations.
+- Intent confirmation is still in testing and may significantly increase token consumption.
+- Anti-Loop generates extra analysis and retry requests, which may increase latency and cost.
+- Basic diagnostic analysis is currently mainly for local troubleshooting and is not advertised as an intelligent diagnostic system.
+
+### Roadmap
+
+Planned directions:
+
+- More mature intent-confirmation strategy
+- Lower token cost for intent confirmation
+- Stronger logic-drift mitigation
+- Agent / Workflow-oriented intelligent diagnostic analysis
+- Automatic analysis of time spent in each stage
+- Token distribution analysis and cost localization
+- More client integration docs
+- More Before / After cases
+
+### FAQ
+
+**Can DSPlus completely eliminate DeepSeek V4 hallucinations?**
+
+No. DSPlus cannot guarantee DeepSeek V4 will never hallucinate. It is designed to reduce hallucinations through better prompt structure, stronger system prompt following, and reasoning-loop detection.
+
+**How does DSPlus reduce DeepSeek V4 hallucinations?**
+
+DSPlus is a local API proxy. It restructures requests, strengthens system prompt following, adds anti-hallucination guardrails, and retries unstable responses when reasoning loops are detected.
+
+**Does DSPlus work with SillyTavern / roleplay?**
+
+Yes. DSPlus helps reduce persona drift, setting fabrication, and repetitive output in long roleplay contexts.
+
+**Is DSPlus good for coding agents?**
+
+Yes. DSPlus helps coding agents follow the system prompt more reliably and reduces unsupported assumptions and instruction drift on long tasks.
+
+**Does DSPlus connect to the internet for fact-checking?**
+
+No. DSPlus is a local proxy and does not perform online fact-checking.
+
+**What about token cost?**
+
+Most features add little overhead. Intent confirmation (experimental) may nearly double token usage, so it is off by default.
+
+**Where is my API Key stored?**
+
+Locally in `config.json` next to `DSPlus.exe`. Do not commit it to public repositories.
+
+### License
+
+Please refer to the actual License file in the repository. If you plan to release it publicly, it is recommended to add a clear open-source license.

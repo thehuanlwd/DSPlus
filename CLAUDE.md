@@ -8,10 +8,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 |------|------|---------|
 | `CLAUDE.md`（本文件） | AI 入口：架构、模块、命令 | 是 |
 | `README.md` | 用户功能说明与接入指南 | 是 |
-| `docs/` | AI 开发记录：标准、坑点、设计规格（见 `docs/README.md`） | 是 |
+| `docs/开发必读/` | AI 开发记录：标准、坑点、设计规格（见 `docs/开发必读/README.md`） | 是 |
+| `docs/` | 用户文档与 SEO 推广文档（README、截图、推广文档） | 是 |
 | `其他文档/` | 个人灵感与笔记 | **否** |
 
-修改代码前应先阅读 `docs/` 中与本次改动相关的文档，尤其是坑点记录与设计规格。
+修改代码前应先阅读 `docs/开发必读/` 中与本次改动相关的文档，尤其是坑点记录与设计规格。
 
 ## 项目概述
 
