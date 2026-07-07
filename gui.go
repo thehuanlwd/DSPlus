@@ -32,8 +32,8 @@ func handleGUI(w http.ResponseWriter, r *http.Request, l *Logger, cfg *SafeConfi
 		return
 	}
 
-	// 静态资源分发
-	if strings.HasSuffix(r.URL.Path, ".css") || strings.HasSuffix(r.URL.Path, ".js") || strings.HasSuffix(r.URL.Path, ".png") || strings.HasSuffix(r.URL.Path, ".svg") {
+	// 静态资源分发（支持语言文件 .json）
+	if strings.HasSuffix(r.URL.Path, ".css") || strings.HasSuffix(r.URL.Path, ".js") || strings.HasSuffix(r.URL.Path, ".png") || strings.HasSuffix(r.URL.Path, ".svg") || strings.HasSuffix(r.URL.Path, ".json") {
 		filePath := "web" + r.URL.Path
 		data, err := webFS.ReadFile(filePath)
 		if err != nil {
@@ -49,6 +49,8 @@ func handleGUI(w http.ResponseWriter, r *http.Request, l *Logger, cfg *SafeConfi
 			w.Header().Set("Content-Type", "image/png")
 		case strings.HasSuffix(filePath, ".svg"):
 			w.Header().Set("Content-Type", "image/svg+xml")
+		case strings.HasSuffix(filePath, ".json"):
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		}
 		w.Write(data)
 		return
@@ -233,7 +235,7 @@ func handleAPISaveConfig(w http.ResponseWriter, r *http.Request, cfg *SafeConfig
 		changed = setStringField(updates, "antiloop_retry_thinking", &c.AntiLoopRetryThinking) || changed
 		changed = setStringField(updates, "antiloop_retry_effort", &c.AntiLoopRetryEffort) || changed
 		changed = setBoolField(updates, "verbose_logging", &c.VerboseLogging) || changed
-		changed = setBoolField(updates, "auto_open_gui", &c.AutoOpenGUI) || changed
+		changed = setStringField(updates, "language", &c.Language) || changed
 		changed = setBoolField(updates, "anti_loop_enabled", &c.AntiLoopEnabled) || changed
 		changed = setBoolField(updates, "debug_mode", &c.DebugMode) || changed
 		changed = setBoolField(updates, "auto_reasoning_content", &c.AutoReasoningContent) || changed

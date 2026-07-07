@@ -42,7 +42,7 @@ build.bat
 ```bash
 DSPlus.exe                  # 默认端口 8188
 DSPlus.exe --port=9999      # 自定义端口
-DSPlus.exe --no-gui         # 纯服务模式
+# 注意：GUI 始终自动打开。窗口关闭按钮（X）会隐藏到托盘（最小化到托盘），托盘菜单“退出”才真正停止服务。
 ```
 
 ### 测试
@@ -116,6 +116,8 @@ go test -v -run TestTransformOpenAIInPlace ./...  # 单个测试
 - `thinking_mode`: 思考模式（`enabled`/`disabled`/空）
 - `anti_loop_enabled`: 防循环总开关
 - `antiloop_check_tokens`: 主动检测阈值（0=关闭）
+- `language`: 界面语言（"zh" / "en"），首次启动按系统自动检测
+- GUI：始终默认打开并不可禁用（设置页已移除“启动时打开 GUI”开关，--no-gui 标志被忽略）。窗口 X 关闭按钮会最小化到托盘，托盘“退出”才真正退出。
 
 ## 注意事项
 

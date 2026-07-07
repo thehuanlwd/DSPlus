@@ -6,6 +6,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DSPlus - YoRHa Terminal v2</title>
   <link rel="stylesheet" href="/index_v2.css">
+  <script src="/i18n.js"></script>
   <script defer src="/app_v2.js"></script>
 </head>
 
@@ -37,14 +38,14 @@
           <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
           <path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"></path>
         </svg>
-        <span>仪表盘</span>
+        <span data-i18n="nav.dashboard">仪表盘</span>
       </button>
       <button class="button" data-page="analysis">
         <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
           stroke-linecap="round" stroke-linejoin="round">
           <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
         </svg>
-        <span>诊断分析</span>
+        <span data-i18n="nav.analysis">诊断分析</span>
       </button>
       <button class="button" data-page="settings">
         <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"
@@ -54,7 +55,7 @@
             d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z">
           </path>
         </svg>
-        <span>系统设置</span>
+        <span data-i18n="nav.settings">系统设置</span>
       </button>
     </div>
   </header>
@@ -69,32 +70,32 @@
           <figcaption>SYSTEM STATE</figcaption>
           <div style="display: flex; align-items: center; gap: 8px; padding: 0.5rem 0.5rem 0 0.5rem;">
             <div class="status-indicator" id="statusDot"></div>
-            <span class="status-text" id="statusText"
+            <span class="status-text" id="statusText" data-i18n="dashboard.state"
               style="font-size: 1.8rem; font-weight: normal; color: var(--yorha-fg);">运行中</span>
           </div>
           <div class="figure-desc">DSPlus listen state</div>
         </figure>
         <figure>
-          <figcaption>LISTEN PORT</figcaption>
+          <figcaption data-i18n="dashboard.listen_port">LISTEN PORT</figcaption>
           <div class="figure-val" id="emptyPort">--</div>
-          <div class="figure-desc">gateway listen port</div>
+          <div class="figure-desc" data-i18n="dashboard.listen_port">gateway listen port</div>
         </figure>
         <figure>
-          <figcaption>TOTAL REQUESTS</figcaption>
+          <figcaption data-i18n="dashboard.total_requests">TOTAL REQUESTS</figcaption>
           <div class="figure-val" id="statTotalDashboard">0</div>
-          <div class="figure-desc">total mutated packets</div>
+          <div class="figure-desc" data-i18n="dashboard.total_requests">total mutated packets</div>
         </figure>
         <figure>
-          <figcaption>DAILY TRAFFIC</figcaption>
+          <figcaption data-i18n="dashboard.daily_traffic">DAILY TRAFFIC</figcaption>
           <div class="figure-val" id="statToday">0</div>
-          <div class="figure-desc">mutations today</div>
+          <div class="figure-desc" data-i18n="dashboard.daily_traffic">mutations today</div>
         </figure>
       </div>
 
       <!-- 工具栏 -->
       <div class="dash-toolbar">
-        <input type="text" id="searchInput" placeholder="FILTER API LOG DATA...">
-        <button class="button button-accent" id="btnClear">
+        <input type="text" id="searchInput" placeholder="FILTER API LOG DATA..." data-i18n-placeholder="dashboard.filter_placeholder">
+        <button class="button button-accent" id="btnClear" data-i18n="dashboard.purge">
           Purge Log Data
         </button>
       </div>
@@ -112,23 +113,23 @@
               <path d="M19.1 4.9C23 8.8 23 15.2 19.1 19.1" />
             </svg>
           </div>
-          <p>等待请求...</p>
-          <p style="font-size:12px;margin-top:4px">向代理端口发送 API 请求即可在此看到记录</p>
+          <p data-i18n="dashboard.empty_title">等待请求...</p>
+          <p style="font-size:12px;margin-top:4px" data-i18n="dashboard.empty_desc">向代理端口发送 API 请求即可在此看到记录</p>
         </div>
         <table class="yorha-table" id="logTable" style="display:none">
           <thead>
             <tr>
-              <th style="width: 110px">时间</th>
-              <th style="width: 100px">行为</th>
-              <th style="width: 110px">格式</th>
-              <th style="width: 60px">流式</th>
-              <th style="width: 70px">重组</th>
-              <th style="width: 70px">状态</th>
-              <th style="width: 140px">延迟</th>
-              <th style="width: 90px">Tokens</th>
-              <th style="width: 80px">缓存</th>
-              <th>API 端点</th>
-              <th style="width: 100px">干预事件</th>
+              <th style="width: 110px" data-i18n="log.time">时间</th>
+              <th style="width: 100px" data-i18n="log.behavior">行为</th>
+              <th style="width: 110px" data-i18n="log.format">格式</th>
+              <th style="width: 60px" data-i18n="log.stream">流式</th>
+              <th style="width: 70px" data-i18n="log.recombined">重组</th>
+              <th style="width: 70px" data-i18n="log.status">状态</th>
+              <th style="width: 140px" data-i18n="log.latency">延迟</th>
+              <th style="width: 90px" data-i18n="log.tokens">Tokens</th>
+              <th style="width: 80px" data-i18n="log.cache">缓存</th>
+              <th data-i18n="log.endpoint">API 端点</th>
+              <th style="width: 100px" data-i18n="log.intervention">干预事件</th>
             </tr>
           </thead>
           <tbody id="logBody"></tbody>
@@ -145,16 +146,16 @@
           <!-- 1. 基本信息 -->
           <div class="detail-section collapsed" id="sec-info">
             <div class="detail-label" onclick="toggleDetailSection(this)">
-              <span class="arrow">&#9662;</span>基本信息
+              <span class="arrow">&#9662;</span><span data-i18n="drawer.basic">基本信息</span>
             </div>
-            <button class="copy-btn" onclick="copyDetailText(this)">复制</button>
+            <button class="copy-btn" onclick="copyDetailText(this)" data-i18n="drawer.copy">复制</button>
             <div class="detail-content" id="drawer-info"></div>
           </div>
 
           <!-- 2. 响应头 -->
           <div class="detail-section collapsed" id="sec-headers">
             <div class="detail-label" onclick="toggleDetailSection(this)">
-              <span class="arrow">&#9662;</span>响应头
+              <span class="arrow">&#9662;</span><span data-i18n="drawer.headers">响应头</span>
             </div>
             <button class="copy-btn" onclick="copyDetailText(this)">复制</button>
             <div class="detail-content" id="drawer-headers"></div>
@@ -163,45 +164,45 @@
           <!-- 3. 原始请求体 -->
           <div class="detail-section collapsed" id="sec-rawRequest">
             <div class="detail-label" onclick="toggleDetailSection(this)">
-              <span class="arrow">&#9662;</span>原始请求体
+              <span class="arrow">&#9662;</span><span data-i18n="drawer.raw_request">原始请求体</span>
             </div>
-            <button class="copy-btn" onclick="copyDetailText(this)">复制</button>
+            <button class="copy-btn" onclick="copyDetailText(this)" data-i18n="drawer.copy">复制</button>
             <div class="detail-content" id="drawer-rawRequest"></div>
           </div>
 
           <!-- 4. 重组后请求体 -->
           <div class="detail-section collapsed" id="sec-mutatedRequest">
             <div class="detail-label" onclick="toggleDetailSection(this)">
-              <span class="arrow">&#9662;</span>重组后请求体
+              <span class="arrow">&#9662;</span><span data-i18n="drawer.transformed">重组后请求体</span>
             </div>
-            <button class="copy-btn" onclick="copyDetailText(this)">复制</button>
+            <button class="copy-btn" onclick="copyDetailText(this)" data-i18n="drawer.copy">复制</button>
             <div class="detail-content" id="drawer-mutatedRequest"></div>
           </div>
 
           <!-- 5. 上游原始响应（仅防循环模式下记录，未经 DSPlus 改写） -->
           <div class="detail-section collapsed" id="sec-upstreamResponse" style="display:none">
             <div class="detail-label" onclick="toggleDetailSection(this)">
-              <span class="arrow">&#9662;</span>上游原始响应（未经改写）
+              <span class="arrow">&#9662;</span><span data-i18n="drawer.upstream_raw">上游原始响应（未经改写）</span>
             </div>
-            <button class="copy-btn" onclick="copyDetailText(this)">复制</button>
+            <button class="copy-btn" onclick="copyDetailText(this)" data-i18n="drawer.copy">复制</button>
             <div class="detail-content" id="drawer-upstreamResponse"></div>
           </div>
 
           <!-- 6. API 响应体 -->
           <div class="detail-section collapsed" id="sec-apiResponse">
             <div class="detail-label" onclick="toggleDetailSection(this)">
-              <span class="arrow">&#9662;</span>API 响应体
+              <span class="arrow">&#9662;</span><span data-i18n="drawer.api_response">API 响应体</span>
             </div>
-            <button class="copy-btn" onclick="copyDetailText(this)">复制</button>
+            <button class="copy-btn" onclick="copyDetailText(this)" data-i18n="drawer.copy">复制</button>
             <div class="detail-content" id="drawer-apiResponse"></div>
           </div>
 
           <!-- 7. 最终回复 -->
           <div class="detail-section collapsed" id="sec-finalReply">
             <div class="detail-label" onclick="toggleDetailSection(this)">
-              <span class="arrow">&#9662;</span>最终回复
+              <span class="arrow">&#9662;</span><span data-i18n="drawer.final_reply">最终回复</span>
             </div>
-            <button class="copy-btn" onclick="copyDetailText(this)">复制</button>
+            <button class="copy-btn" onclick="copyDetailText(this)" data-i18n="drawer.copy">复制</button>
             <div class="detail-content" id="drawer-finalReply"></div>
           </div>
         </div>
@@ -214,12 +215,11 @@
         <!-- 左栏会话列表 -->
         <div class="session-list-panel">
           <div class="session-list-header">
-            <span>Session trace</span>
-            <button class="button" onclick="loadAnalysisSessions()"
-              style="font-size: 0.75rem; padding: 0.2rem 0.6rem; height: auto;">刷新</button>
+            <span data-i18n="analysis.session_list">Session trace</span>
+            <button class="button" onclick="loadAnalysisSessions()" data-i18n="analysis.refresh" style="font-size: 0.75rem !important; padding: 0.2rem 0.6rem !important; height: auto; box-shadow: none !important;">刷新</button>
           </div>
           <div class="session-list-body" id="sessionListContainer">
-            <div class="empty-state">读取中...</div>
+            <div class="empty-state" data-i18n="analysis.initial_loading">读取中...</div>
           </div>
         </div>
 
@@ -229,14 +229,14 @@
             <div>
               <h2 style="margin-bottom: 0; border: none; padding: 0;" id="ansSessionId">REPORT #--</h2>
               <div class="report-summary-bar">
-                <span>请求数: <span id="ansRequestCount">--</span></span>
-                <span>Tokens: <span id="ansTokens">--</span></span>
-                <span>缓存命中: <span id="ansCacheRatio">--</span></span>
+                <span><span data-i18n="analysis.summary_requests">请求数</span>: <span id="ansRequestCount">--</span></span>
+                <span><span data-i18n="analysis.summary_tokens">Tokens</span>: <span id="ansTokens">--</span></span>
+                <span><span data-i18n="analysis.summary_cache">缓存命中</span>: <span id="ansCacheRatio">--</span></span>
                 <span id="ansRetries" class="badge badge-antiloop-retry" style="display:none">0</span>
                 <span id="ansErrors" class="badge badge-no" style="display:none">0</span>
               </div>
             </div>
-            <button class="button" onclick="exportSessionMarkdown()">
+            <button class="button" onclick="exportSessionMarkdown()" data-i18n="analysis.export">
               Export Report
             </button>
           </div>
@@ -248,7 +248,7 @@
               style="display: flex; align-items: center; gap: 4px; font-size: 11px; color: var(--yorha-fg-dim); cursor: pointer;">
               <span id="toolsArrow" class="arrow collapsed"
                 style="display: inline-block; margin-right: 4px; transition: transform 0.15s; font-size: 10px;">▼</span>
-              <span>加载的 Tools (点击展开)</span>
+              <span data-i18n="analysis.tools_header">加载的 Tools (点击展开)</span>
             </div>
             <div id="ansToolsContent"
               style="display:none; margin-top: 6px; padding: 8px 12px; background: rgba(0,0,0,0.05); border: 1px solid var(--yorha-border); font-family: monospace; font-size: 11px; white-space: pre-wrap; word-break: break-all;">
@@ -273,7 +273,7 @@
                 <line x1="8" y1="12" x2="14" y2="12" />
               </svg>
             </div>
-            <p>请在左侧选择一个请求查看详情</p>
+            <p data-i18n="analysis.select_prompt">请在左侧选择一个请求查看详情</p>
           </div>
         </div>
       </div>
@@ -286,81 +286,81 @@
 
           <!-- 板块 1: 基础与代理配置 -->
           <div class="config-card">
-            <h2>基础与代理配置</h2>
+            <h2 data-i18n="settings.basic_title">基础与代理配置</h2>
 
             <div class="config-row">
-              <label>DeepSeek API Key</label>
+              <label data-i18n="settings.api_key">DeepSeek API Key</label>
               <input type="password" id="cfgAPIKey" placeholder="sk-...">
               <div class="hint">API Key 仅存储在本地 config.json 中</div>
             </div>
 
             <div class="config-row">
-              <label>监听端口</label>
+              <label data-i18n="settings.port">监听端口</label>
               <div class="yorha-number-stepper">
                 <button type="button" class="stepper-btn" onclick="stepValue('cfgPort', -1, 1, 65535)">-</button>
                 <input type="number" id="cfgPort" min="1" max="65535" value="8188">
                 <button type="button" class="stepper-btn" onclick="stepValue('cfgPort', 1, 1, 65535)">+</button>
               </div>
-              <div class="hint">修改端口后需要重启服务生效</div>
+              <div class="hint" data-i18n="settings.port_hint">修改端口后需要重启服务生效</div>
             </div>
 
             <div class="config-row">
-              <label>OpenAI 上游地址</label>
+              <label data-i18n="settings.openai_upstream">OpenAI 上游地址</label>
               <input type="text" id="cfgOpenAIUpstream" value="https://api.deepseek.com">
             </div>
 
             <div class="config-row">
-              <label>Anthropic 上游地址</label>
+              <label data-i18n="settings.anthropic_upstream">Anthropic 上游地址</label>
               <input type="text" id="cfgAnthropicUpstream" value="https://api.deepseek.com/anthropic">
             </div>
 
-            <div class="toggle-container">
-              <div class="toggle-info">
-                <span class="toggle-title">启动时打开 GUI</span>
-              </div>
-              <label class="yorha-switch">
-                <input type="checkbox" id="cfgAutoGUI" checked>
-                <span class="yorha-slider"></span>
-              </label>
+            <!-- 语言选项：放在原 GUI 开关位置 -->
+            <div class="config-row">
+              <label data-i18n="settings.language">界面语言</label>
+              <select id="cfgLanguage">
+                <option value="zh" data-i18n="settings.lang_zh">中文</option>
+                <option value="en" data-i18n="settings.lang_en">English</option>
+              </select>
+              <div class="hint" data-i18n="settings.language_hint">初次启动按系统自动选择；切换后立即生效</div>
             </div>
           </div>
 
           <!-- 板块 2: 规则设置 -->
           <div class="config-card">
-            <h2>规则设置</h2>
+            <h2 data-i18n="settings.rules_title">规则设置</h2>
 
             <div class="config-row">
-              <label>思考模式</label>
+              <label data-i18n="settings.thinking_mode">思考模式</label>
               <select id="cfgThinkingMode">
-                <option value="">不设置（由客户端决定）</option>
-                <option value="disabled">强制关闭思考</option>
-                <option value="enabled">强制启动思考</option>
+                <option value="" data-i18n="settings.thinking_mode.none">不设置（由客户端决定）</option>
+                <option value="disabled" data-i18n="settings.thinking_mode.disabled">强制关闭思考</option>
+                <option value="enabled" data-i18n="settings.thinking_mode.enabled">强制启动思考</option>
               </select>
-              <div class="hint">强制覆盖客户端请求中的 thinking 参数</div>
+              <div class="hint" data-i18n="settings.thinking_mode_hint">强制覆盖客户端请求中的 thinking 参数</div>
             </div>
 
             <div class="config-row" id="effortGroup" style="display:none">
-              <label>思考强度</label>
+              <label data-i18n="settings.effort">思考强度</label>
               <select id="cfgReasoningEffort">
-                <option value="high">high（标准推理）</option>
-                <option value="max">max（最强推理）</option>
+                <option value="high" data-i18n="settings.effort.high">high（标准推理）</option>
+                <option value="max" data-i18n="settings.effort.max">max（最强推理）</option>
               </select>
-              <div class="hint">仅在"强制启动思考"时生效</div>
+              <div class="hint" data-i18n="settings.effort_hint">仅在"强制启动思考"时生效</div>
             </div>
 
             <div class="config-row">
-              <label>Max Tokens (输出限制)</label>
+              <label data-i18n="settings.max_tokens">Max Tokens (输出限制)</label>
               <select id="cfgMaxTokensMode">
-                <option value="">不修改</option>
+                <option value="" data-i18n="settings.max_tokens.none">不修改</option>
                 <option value="5000">5000</option>
                 <option value="32000">32000</option>
-                <option value="custom">自定义</option>
+                <option value="custom" data-i18n="settings.max_tokens.custom">自定义</option>
               </select>
-              <div class="hint">限制模型最大输出 Token 数，防止陷入思考死循环</div>
+              <div class="hint" data-i18n="settings.max_tokens_hint">限制模型最大输出 Token 数，防止陷入思考死循环</div>
             </div>
 
             <div class="config-row" id="maxTokensCustomGroup" style="display:none">
-              <label>自定义 Max Tokens 值</label>
+              <label data-i18n="settings.max_tokens_custom">自定义 Max Tokens 值</label>
               <div class="yorha-number-stepper">
                 <button type="button" class="stepper-btn"
                   onclick="stepValue('cfgMaxTokensCustom', -500, 1, 100000)">-</button>
@@ -371,40 +371,40 @@
             </div>
 
             <div class="config-row">
-              <label>System Prompt 拼接位置</label>
+              <label data-i18n="settings.placement">System Prompt 拼接位置</label>
               <select id="cfgPlacement">
-                <option value="first">第一条用户消息后</option>
-                <option value="last">最后一条用户消息后</option>
-                <option value="none">不修改（保留原样）</option>
+                <option value="first" data-i18n="settings.placement.first">第一条用户消息后</option>
+                <option value="last" data-i18n="settings.placement.last">最后一条用户消息后</option>
+                <option value="none" data-i18n="settings.placement.none">不修改（保留原样）</option>
               </select>
-              <div class="hint">选择"最后一条"会将 system prompt 跟随最新消息，但会破坏缓存命中</div>
+              <div class="hint" data-i18n="settings.placement_hint">选择"最后一条"会将 system prompt 跟随最新消息，但会破坏缓存命中</div>
             </div>
 
             <div class="config-row">
-              <label>额外 Prompt 注入位置 (最高准则)</label>
+              <label data-i18n="settings.extra_placement">额外 Prompt 注入位置 (最高准则)</label>
               <select id="cfgExtraPlacement">
-                <option value="none">不添加</option>
-                <option value="first">注入到第一条用户消息后</option>
-                <option value="last">注入到最后一条用户消息后</option>
+                <option value="none" data-i18n="settings.extra_placement.none">不添加</option>
+                <option value="first" data-i18n="settings.extra_placement.first">注入到第一条用户消息后</option>
+                <option value="last" data-i18n="settings.extra_placement.last">注入到最后一条用户消息后</option>
               </select>
-              <div class="hint">选择注入位置后，在下方输入具体指令</div>
+              <div class="hint" data-i18n="settings.extra_placement_hint">选择注入位置后，在下方输入具体指令</div>
             </div>
 
             <div class="config-row" id="extraPromptGroup" style="display:none">
-              <label>注入的最高准则内容</label>
+              <label data-i18n="settings.extra_prompt">注入的最高准则内容</label>
               <textarea id="cfgExtraPrompt" rows="8"
-                placeholder="此处填写额外的最高优先级指令...&#10;将拼接到 System Prompt 之后，作为最高准则执行"></textarea>
+                placeholder="此处填写额外的最高优先级指令...&#10;将拼接到 System Prompt 之后，作为最高准则执行" data-i18n-placeholder="settings.extra_prompt_placeholder"></textarea>
             </div>
           </div>
 
           <!-- 板块 3: 高级设置 -->
           <div class="config-card">
-            <h2>高级设置</h2>
+            <h2 data-i18n="settings.advanced_title">高级设置</h2>
 
             <div class="toggle-container">
               <div class="toggle-info">
-                <span class="toggle-title">允许局域网/WSL 访问</span>
-                <span class="toggle-desc">开启后允许局域网其他设备访问，重启后生效</span>
+                <span class="toggle-title" data-i18n="settings.lan_access">允许局域网/WSL 访问</span>
+                <span class="toggle-desc" data-i18n="settings.lan_access_desc">开启后允许局域网其他设备访问，重启后生效</span>
               </div>
               <label class="yorha-switch">
                 <input type="checkbox" id="cfgLanAccess">
@@ -414,8 +414,8 @@
 
             <div class="toggle-container">
               <div class="toggle-info">
-                <span class="toggle-title">reasoning_content 自动补全</span>
-                <span class="toggle-desc">自动补全空 reasoning 避免请求报错</span>
+                <span class="toggle-title" data-i18n="settings.auto_reasoning">reasoning_content 自动补全</span>
+                <span class="toggle-desc" data-i18n="settings.auto_reasoning_desc">自动补全空 reasoning 避免请求报错</span>
               </div>
               <label class="yorha-switch">
                 <input type="checkbox" id="cfgAutoReasoning" checked>
@@ -425,8 +425,8 @@
 
             <div class="toggle-container">
               <div class="toggle-info">
-                <span class="toggle-title">空 content 自动修复</span>
-                <span class="toggle-desc">把历史中空的 assistant content 用 reasoning 回填，避免循环请求</span>
+                <span class="toggle-title" data-i18n="settings.auto_fix_empty">空 content 自动修复</span>
+                <span class="toggle-desc" data-i18n="settings.auto_fix_empty_desc">把历史中空的 assistant content 用 reasoning 回填，避免循环请求</span>
               </div>
               <label class="yorha-switch">
                 <input type="checkbox" id="cfgAutoFixEmpty">
@@ -436,8 +436,8 @@
 
             <div class="toggle-container">
               <div class="toggle-info">
-                <span class="toggle-title">防幻觉 (意图校准)</span>
-                <span class="toggle-desc">在模型思考完、准备输出正式回答前强行注入最新用户意图进行校准</span>
+                <span class="toggle-title" data-i18n="settings.anti_hallucination">防幻觉 (意图校准)</span>
+                <span class="toggle-desc" data-i18n="settings.anti_hallucination_desc">在模型思考完、准备输出正式回答前强行注入最新用户意图进行校准</span>
               </div>
               <label class="yorha-switch">
                 <input type="checkbox" id="cfgAntiHallucination">
@@ -449,17 +449,17 @@
             <div id="antihallucinationSubSettings"
               style="display:none; padding-left: 1rem; border-left: 2px solid var(--yorha-border); margin-top: 0.5rem; margin-bottom: 0.5rem;">
               <div class="config-row" style="flex-direction: column; align-items: flex-start; gap: 0.3rem;">
-                <label style="margin-bottom: 0.2rem;">校准提示语模板</label>
+                <label style="margin-bottom: 0.2rem;" data-i18n="settings.anti_hallucination_prompt">校准提示语模板</label>
                 <textarea id="cfgAntiHallucinationPrompt" rows="3"
                   style="width: 100%; background: var(--yorha-bg-depth); color: var(--yorha-fg); border: 1px solid var(--yorha-border); padding: 0.5rem; font-family: monospace; resize: vertical; box-sizing: border-box;"></textarea>
-                <div class="hint">使用 {{latest_user_message}} 代表最新的一条用户消息</div>
+                <div class="hint" data-i18n="settings.anti_hallucination_prompt_hint">使用 {{latest_user_message}} 代表最新的一条用户消息</div>
               </div>
             </div>
 
             <div class="toggle-container">
               <div class="toggle-info">
-                <span class="toggle-title">防无限思考 (Anti-Loop)</span>
-                <span class="toggle-desc">检测被截断时自动分析并重试</span>
+                <span class="toggle-title" data-i18n="settings.antiloop_title">防无限思考 (Anti-Loop)</span>
+                <span class="toggle-desc" data-i18n="settings.antiloop_desc">检测被截断时自动分析并重试</span>
               </div>
               <label class="yorha-switch">
                 <input type="checkbox" id="cfgAntiLoop">
@@ -471,29 +471,29 @@
             <div id="antiloopSubSettings"
               style="display:none; padding-left: 1rem; border-left: 2px solid var(--yorha-border); margin-top: 0.5rem; margin-bottom: 0.5rem;">
               <div class="config-row">
-                <label>重试模型</label>
+                <label data-i18n="settings.antiloop_retry_model">重试模型</label>
                 <select id="cfgAntiloopRetryModel">
-                  <option value="deepseek-v4-flash">deepseek-v4-flash (快速)</option>
-                  <option value="deepseek-v4-pro">deepseek-v4-pro (强力)</option>
+                  <option value="deepseek-v4-flash" data-i18n="settings.antiloop_retry_model.flash">deepseek-v4-flash (快速)</option>
+                  <option value="deepseek-v4-pro" data-i18n="settings.antiloop_retry_model.pro">deepseek-v4-pro (强力)</option>
                 </select>
               </div>
               <div class="config-row">
-                <label>重试时启用思考</label>
+                <label data-i18n="settings.antiloop_retry_thinking">重试时启用思考</label>
                 <select id="cfgAntiloopRetryThinking">
-                  <option value="">不启用（默认）</option>
-                  <option value="enabled">启用思考</option>
-                  <option value="disabled">禁用思考</option>
+                  <option value="" data-i18n="settings.antiloop_retry_thinking.none">不启用（默认）</option>
+                  <option value="enabled" data-i18n="settings.antiloop_retry_thinking.enabled">启用思考</option>
+                  <option value="disabled" data-i18n="settings.antiloop_retry_thinking.disabled">禁用思考</option>
                 </select>
               </div>
               <div class="config-row" id="antiloopEffortGroup" style="display:none">
-                <label>重试思考强度</label>
+                <label data-i18n="settings.antiloop_retry_effort">重试思考强度</label>
                 <select id="cfgAntiloopRetryEffort">
-                  <option value="high">high (标准推理)</option>
-                  <option value="max">max (最强推理)</option>
+                  <option value="high" data-i18n="settings.antiloop_retry_effort.high">high (标准推理)</option>
+                  <option value="max" data-i18n="settings.antiloop_retry_effort.max">max (最强推理)</option>
                 </select>
               </div>
               <div class="config-row">
-                <label>检测触发 Token 数</label>
+                <label data-i18n="settings.antiloop_check_tokens">检测触发 Token 数</label>
                 <div class="yorha-number-stepper">
                   <button type="button" class="stepper-btn"
                     onclick="stepValue('cfgAntiloopCheckTokens', -100, 0, 100000)">-</button>
@@ -501,19 +501,19 @@
                   <button type="button" class="stepper-btn"
                     onclick="stepValue('cfgAntiloopCheckTokens', 100, 0, 100000)">+</button>
                 </div>
-                <div class="hint">达到该值后并行分析思维。0表示仅依赖截断兜底</div>
+                <div class="hint" data-i18n="settings.antiloop_check_tokens_hint">达到该值后并行分析思维。0表示仅依赖截断兜底</div>
               </div>
             </div>
           </div>
 
           <!-- 板块 4: 系统设置 -->
           <div class="config-card">
-            <h2>系统设置</h2>
+            <h2 data-i18n="settings.system_title">系统设置</h2>
 
             <div class="toggle-container">
               <div class="toggle-info">
-                <span class="toggle-title">详细记录 (Verbose)</span>
-                <span class="toggle-desc">完整记录请求/响应内容（可能包含隐私）</span>
+                <span class="toggle-title" data-i18n="settings.verbose">详细记录 (Verbose)</span>
+                <span class="toggle-desc" data-i18n="settings.verbose_desc">完整记录请求/响应内容（可能包含隐私）</span>
               </div>
               <label class="yorha-switch">
                 <input type="checkbox" id="cfgVerbose">
@@ -523,8 +523,8 @@
 
             <div class="toggle-container">
               <div class="toggle-info">
-                <span class="toggle-title">Debug 模式</span>
-                <span class="toggle-desc">显示调试日志与额外 Debug 卡片</span>
+                <span class="toggle-title" data-i18n="settings.debug">Debug 模式</span>
+                <span class="toggle-desc" data-i18n="settings.debug_desc">显示调试日志与额外 Debug 卡片</span>
               </div>
               <label class="yorha-switch">
                 <input type="checkbox" id="cfgDebugMode">
@@ -534,8 +534,8 @@
 
             <div class="toggle-container">
               <div class="toggle-info">
-                <span class="toggle-title">启用会话 Analysis 服务</span>
-                <span class="toggle-desc">对代理流量进行高层会话维度聚合与分析</span>
+                <span class="toggle-title" data-i18n="settings.analysis">启用会话 Analysis 服务</span>
+                <span class="toggle-desc" data-i18n="settings.analysis_desc">对代理流量进行高层会话维度聚合与分析</span>
               </div>
               <label class="yorha-switch">
                 <input type="checkbox" id="cfgAnalysisEnabled" checked>
@@ -547,7 +547,7 @@
             <div id="analysisSubSettings"
               style="display:none; padding-left: 1rem; border-left: 2px solid var(--yorha-border); margin-top: 0.5rem; margin-bottom: 0.5rem;">
               <div class="config-row" style="margin-top: 0.5rem;">
-                <label>分析日志保留天数</label>
+                <label data-i18n="settings.analysis_retention">分析日志保留天数</label>
                 <div style="display: flex; gap: 0.5rem;">
                   <div class="yorha-number-stepper" style="flex: 1;">
                     <button type="button" class="stepper-btn"
@@ -557,7 +557,7 @@
                       onclick="stepValue('cfgAnalysisRetentionDays', 1, 1, 365)">+</button>
                   </div>
                   <button type="button" class="button button-accent" onclick="clearAnalysisHistory()"
-                    style="font-size: 0.75rem; padding: 0 1rem; height: 2.2rem; box-shadow: none !important;">
+                    style="font-size: 0.75rem; padding: 0 1rem; height: 2.2rem; box-shadow: none !important;" data-i18n="settings.analysis_clear">
                     清除历史记录
                   </button>
                 </div>
@@ -565,12 +565,12 @@
             </div>
 
             <div class="config-row" style="margin-top: 1rem;">
-              <label>GUI 界面主题 (Theme)</label>
+              <label data-i18n="settings.theme">GUI 界面主题 (Theme)</label>
               <select id="cfgTheme">
-                <option value="yorha">YoRHa (寄叶军用系统风格)</option>
-                <option value="classic">Classic (GitHub 深色风格)</option>
+                <option value="yorha" data-i18n="settings.theme.yorha">YoRHa (寄叶军用系统风格)</option>
+                <option value="classic" data-i18n="settings.theme.classic">Classic (GitHub 深色风格)</option>
               </select>
-              <div class="hint">切换控制台的主题外观，实时生效并保存在本地</div>
+              <div class="hint" data-i18n="settings.theme_hint">切换控制台的主题外观，实时生效并保存在本地</div>
             </div>
           </div>
 
@@ -579,21 +579,21 @@
 
       <!-- ── 固定的底部操作栏 ── -->
       <div class="yorha-footer-actions">
-        <button class="button button-accent" onclick="saveSettings()">
+        <button class="button button-accent" onclick="saveSettings()" data-i18n="actions.save">
           保存配置 SAVE CONFIG
         </button>
         <button class="button" style="background-color: transparent; border: 1px solid var(--yorha-fg);"
-          onclick="resetSettings()">
+          onclick="resetSettings()" data-i18n="actions.reset">
           恢复默认 RESTORE DEFAULT
         </button>
 
         <!-- 重启服务横幅 -->
         <div id="restartBanner"
           style="display:none; display: flex; align-items: center; gap: 1rem; font-size: 0.8rem; margin-left: 2rem;">
-          <span style="color: var(--yorha-accent); font-weight: bold;">[ RESTART REQUIRED ]</span>
-          <span id="restartReasonText" style="color: var(--yorha-fg-dim);">设置已保存，重启服务后生效。</span>
+          <span style="color: var(--yorha-accent); font-weight: bold;" data-i18n="actions.restart_required">[ RESTART REQUIRED ]</span>
+          <span id="restartReasonText" style="color: var(--yorha-fg-dim);" data-i18n="actions.restart_reason">设置已保存，重启服务后生效。</span>
           <button class="button button-accent" id="btnRestartService" onclick="restartService()"
-            style="padding: 0.3rem 0.8rem; font-size: 0.75rem; box-shadow: none !important;">
+            style="padding: 0.3rem 0.8rem; font-size: 0.75rem; box-shadow: none !important;" data-i18n="actions.restart">
             重启服务
           </button>
         </div>

@@ -27,17 +27,69 @@ let analysisTimelineState = {
   hasMore: false
 };
 
-const semanticLabelMap = {
-  'tool_call': '工具调用',
-  'callback_call': '回传调用',
-  'tool_result': '工具回传',
-  'thinking_cont': '继续思考',
-  'thinking_finished': '思考完成',
-  'antiloop_retry': '防无限思考重试',
-  'antiloop_analyzer': '防无限思考分析',
-  'antihallucination_retry': '思维修正',
-  'debug': 'Debug',
-  'chat': '对话'
+function getSemanticLabel(type) {
+  const keyMap = {
+    'tool_call': 'semantic.tool_call',
+    'callback_call': 'semantic.callback_call',
+    'tool_result': 'semantic.tool_result',
+    'thinking_cont': 'semantic.thinking_cont',
+    'thinking_finished': 'semantic.thinking_finished',
+    'antiloop_retry': 'semantic.antiloop_retry',
+    'antiloop_analyzer': 'semantic.antiloop_analyzer',
+    'antihallucination_retry': 'semantic.antihallucination_retry',
+    'debug': 'semantic.debug',
+    'chat': 'semantic.chat'
+  };
+  const k = keyMap[type];
+  if (k && typeof t === 'function') {
+    const translated = t(k);
+    if (translated && translated !== k) return translated;
+  }
+  // 兜底（初始加载前）
+  const fallbacks = {
+    'tool_call': '工具调用',
+    'callback_call': '回传调用',
+    'tool_result': '工具回传',
+    'thinking_cont': '继续思考',
+    'thinking_finished': '思考完成',
+    'antiloop_retry': '防无限思考重试',
+    'antiloop_analyzer': '防无限思考分析',
+    'antihallucination_retry': '思维修正',
+    'debug': 'Debug',
+    'chat': '对话'
+  };
+  return fallbacks[type] || type;
+}
+
+// 语言切换后供 i18n 模块调用的动态重渲染钩子
+window.refreshI18nDynamic = function () {
+  try {
+    if (typeof renderLogs === 'function') renderLogs();
+
+    // 诊断分析页面动态内容重渲染
+    const analysisPage = document.getElementById('analysis');
+    if (analysisPage && analysisPage.classList.contains('active')) {
+      if (typeof renderSessionList === 'function') renderSessionList();
+      // 语言切换时重新渲染详情（会重新拉取但保证所有标签更新）
+      if (currentSessionId && typeof showSessionDetail === 'function') {
+        // 避免重复加载冲突，延迟一点
+        setTimeout(() => { if (currentSessionId) showSessionDetail(currentSessionId); }, 10);
+      }
+    }
+
+    // 设置页面：自定义下拉组件需要重新构建（因为它在 convert 时从 option.textContent 拷贝了文本）
+    // 语言切换后 <option> 已被 applyI18n 更新，但自定义 UI 还没刷新
+    const settingsPage = document.getElementById('settings');
+    if (settingsPage && settingsPage.classList.contains('active') && typeof convertSelectsToYorha === 'function') {
+      // 延迟一点确保 applyI18n 完成更新 option 文本
+      setTimeout(() => {
+        convertSelectsToYorha();
+        // 重新触发 change 以更新子分组显示（如 effortGroup）
+        const selects = document.querySelectorAll('#settings select, #settings input[type=checkbox]');
+        selects.forEach(el => el.dispatchEvent(new Event('change')));
+      }, 10);
+    }
+  } catch (e) {}
 };
 
 function $(id) { return document.getElementById(id); }
@@ -65,6 +117,14 @@ function applyTheme() {
 
 // ── 初始化 ──
 function init() {
+  // 语言系统初始化（加载翻译 + 应用）
+  let i18nPromise = Promise.resolve();
+  if (typeof initI18n === 'function') {
+    i18nPromise = initI18n().then(() => {
+      if (typeof applyI18n === 'function') applyI18n();
+    });
+  }
+
   // 初始化主题外观
   applyTheme();
 
@@ -146,6 +206,15 @@ function init() {
 
   connectWS();
   loadStatus();
+
+  // 初始加载日志（确保列表有数据）
+  // 注意：loadLogs 主要在启动 .then 中调用，这里也触发一次以防万一
+  if (typeof loadLogs === 'function') {
+    // 延迟一点确保 WS 也连上
+    setTimeout(() => loadLogs(), 100);
+  }
+
+  return i18nPromise;
 }
 
 // ── 加载状态 ──
@@ -395,22 +464,11 @@ function renderLogs() {
   const query = $('searchInput').value.toLowerCase();
   const filtered = logs.filter(e => {
     if (!query) return true;
-    const semanticLabelMap = {
-      '对话开始': '对话开始',
-      '工具调用': '工具调用',
-      '工具回传': '工具回传',
-      '调用回传': '调用回传',
-      '完成对话': '完成对话',
-      'chat': '对话开始',
-      'tool_call': '工具调用',
-      'tool_result': '工具回传',
-      'thinking_cont': '继续思考'
-    };
-    const semLabel = semanticLabelMap[e.semantic_type] || '对话开始';
+    const semLabel = getSemanticLabel(e.semantic_type) || '对话';
     return (e.path||'').toLowerCase().includes(query) ||
            (e.format||'').toLowerCase().includes(query) ||
            (e.semantic_type||'').toLowerCase().includes(query) ||
-           semLabel.includes(query) ||
+           semLabel.toLowerCase().includes(query) ||
            String(e.status_code).includes(query);
   });
 
@@ -424,8 +482,9 @@ function renderLogs() {
     } else {
       $('logTable').style.display = '';
       $('emptyState').style.display = 'none';
-      body.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--yorha-fg-dim);padding:20px">无匹配记录</td></tr>';
+      body.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--yorha-fg-dim);padding:20px">' + (t('common.no_match') || '无匹配记录') + '</td></tr>';
     }
+    if (typeof applyI18n === 'function') applyI18n();
     return;
   }
 
@@ -489,6 +548,8 @@ function renderLogs() {
 
   body.innerHTML = '';
   body.appendChild(fragment);
+
+  if (typeof applyI18n === 'function') applyI18n();
 }
 
 // ── 右侧滑动抽屉详情展示 ──
@@ -860,7 +921,6 @@ async function loadSettings() {
     $('cfgOpenAIUpstream').value = cfg.openai_upstream || 'https://api.deepseek.com';
     $('cfgAnthropicUpstream').value = cfg.anthropic_upstream || 'https://api.deepseek.com/anthropic';
     $('cfgVerbose').checked = cfg.verbose_logging || false;
-    $('cfgAutoGUI').checked = cfg.auto_open_gui !== false;
     $('cfgThinkingMode').value = cfg.thinking_mode || '';
     $('cfgReasoningEffort').value = cfg.reasoning_effort || 'high';
     $('cfgPlacement').value = cfg.system_prompt_placement || 'first';
@@ -893,13 +953,18 @@ async function loadSettings() {
     $('cfgAnalysisRetentionDays').value = cfg.analysis_retention_days || 7;
 
     $('cfgTheme').value = cfg.theme || 'yorha';
+    if ($('cfgLanguage')) {
+      $('cfgLanguage').value = cfg.language || 'zh';
+    }
 
     setRestartBanner(cfg.restart_required, cfg.restart_reasons);
 
     // 回填完成后，重新刷新并转换自定义的尼尔下拉组件
     convertSelectsToYorha();
+
+    if (typeof applyI18n === 'function') applyI18n();
   } catch(e) {
-    triggerAlert('加载配置失败');
+    triggerAlert(t('alert.load_failed') || '加载配置失败');
   }
 }
 
@@ -912,7 +977,6 @@ async function saveSettings() {
     openai_upstream: $('cfgOpenAIUpstream').value,
     anthropic_upstream: $('cfgAnthropicUpstream').value,
     verbose_logging: $('cfgVerbose').checked,
-    auto_open_gui: $('cfgAutoGUI').checked,
     thinking_mode: $('cfgThinkingMode').value,
     reasoning_effort: $('cfgReasoningEffort').value,
     system_prompt_placement: $('cfgPlacement').value,
@@ -936,6 +1000,7 @@ async function saveSettings() {
     analysis_persist_raw_bodies: $('cfgAnalysisEnabled').checked,
     analysis_retention_days: parseInt($('cfgAnalysisRetentionDays').value) || 7,
     theme: $('cfgTheme').value,
+    language: $('cfgLanguage') ? $('cfgLanguage').value : 'zh',
   };
 
   try {
@@ -952,30 +1017,38 @@ async function saveSettings() {
     localStorage.setItem('dsplus_theme', selectedTheme);
     document.body.className = 'theme-' + selectedTheme;
 
+    // 语言切换：如果改变了则立即应用
+    const newLang = payload.language;
+    if (newLang && typeof setLanguage === 'function' && newLang !== (typeof getCurrentLang === 'function' ? getCurrentLang() : '')) {
+      setLanguage(newLang);
+    }
+
     if (resp.status === 'saved') {
-      triggerAlert(resp.restart_required ? '配置已保存，重启后生效' : '配置已保存');
+      const msg = resp.restart_required ? t('alert.saved_restart') || '配置已保存，重启后生效' : t('alert.saved') || '配置已保存';
+      triggerAlert(msg);
     } else {
-      triggerAlert(resp.restart_required ? '配置已保存，等待重启' : '配置已保存');
+      const msg = resp.restart_required ? t('alert.saved_restart') || '配置已保存，等待重启' : t('alert.saved') || '配置已保存';
+      triggerAlert(msg);
     }
   } catch(e) {
-    triggerAlert('保存失败');
+    triggerAlert(t('alert.save_failed') || '保存失败');
   }
 }
 
 // ── 清除分析历史会话 ──
 async function clearAnalysisHistory() {
-  if (!confirm('确定要清空所有分析历史会话和本地日志文件吗？此操作不可恢复。')) {
+  if (!confirm(t('alert.analysis_clear_confirm') || '确定要清空所有分析历史会话和本地日志文件吗？此操作不可恢复。')) {
     return;
   }
   try {
     const r = await fetch('/api/analysis/sessions', { method: 'DELETE' });
     const resp = await r.json();
     if (resp.status === 'cleared') {
-      triggerAlert('分析历史已全部清除');
+      triggerAlert(t('alert.analysis_cleared') || '分析历史已全部清除');
       currentSessionId = null;
       loadAnalysisSessions();
     } else {
-      triggerAlert('清除失败');
+      triggerAlert(t('alert.analysis_clear_failed') || '清除失败');
     }
   } catch(e) {
     triggerAlert('请求清除失败');
@@ -990,7 +1063,6 @@ function resetSettings() {
   $('cfgOpenAIUpstream').value = 'https://api.deepseek.com';
   $('cfgAnthropicUpstream').value = 'https://api.deepseek.com/anthropic';
   $('cfgVerbose').checked = false;
-  $('cfgAutoGUI').checked = true;
   $('cfgThinkingMode').value = '';
   $('cfgReasoningEffort').value = 'high';
   $('cfgPlacement').value = 'first';
@@ -1016,6 +1088,9 @@ function resetSettings() {
   $('analysisSubSettings').style.display = 'none';
   $('cfgAnalysisRetentionDays').value = 7;
 
+  // 语言重置为当前检测默认（简单用 zh，真正检测在后端）
+  if ($('cfgLanguage')) $('cfgLanguage').value = 'zh';
+
   // 主题重置
   localStorage.setItem('dsplus_theme', 'yorha');
   applyTheme();
@@ -1027,7 +1102,9 @@ function resetSettings() {
   const selects = document.querySelectorAll('#settings select, #settings input[type=checkbox]');
   selects.forEach(el => el.dispatchEvent(new Event('change')));
 
-  triggerAlert('已重置为默认值');
+  if (typeof applyI18n === 'function') applyI18n();
+
+  triggerAlert(t('alert.reset_done') || '已重置为默认值');
 }
 
 function setRestartBanner(visible, reasons) {
@@ -1035,13 +1112,14 @@ function setRestartBanner(visible, reasons) {
   if (!banner) return;
   banner.style.display = visible ? '' : 'none';
   if (visible) {
-    const names = Array.isArray(reasons) && reasons.length ? reasons.join('、') : '部分设置';
-    $('restartReasonText').textContent = names + '已保存，重启服务后生效。';
+    const names = Array.isArray(reasons) && reasons.length ? reasons.join('、') : '';
+    const base = t('actions.restart_reason') || '设置已保存，重启服务后生效。';
+    $('restartReasonText').textContent = names ? (names + (t('actions.restart_suffix') || '已保存，重启服务后生效。')) : base;
   }
   const btn = $('btnRestartService');
   if (btn) {
     btn.disabled = false;
-    btn.textContent = '重启服务';
+    btn.textContent = t('actions.restart') || '重启服务';
   }
 }
 
@@ -1050,19 +1128,19 @@ async function restartService() {
   const nextPort = parseInt($('cfgPort').value) || 8188;
   if (btn) {
     btn.disabled = true;
-    btn.textContent = '正在重启...';
+    btn.textContent = t('alert.restarting') || '正在重启...';
   }
   try {
     await fetch('/api/restart', { method: 'POST' });
-    triggerAlert('正在重启服务...');
+    triggerAlert(t('alert.restarting') || '正在重启服务...');
     setTimeout(() => {
       location.href = 'http://127.0.0.1:' + nextPort + '/';
     }, 1800);
   } catch(e) {
-    triggerAlert('重启请求失败，请手动重启 DSPlus');
+    triggerAlert(t('alert.restart_manual') || '重启请求失败，请手动重启 DSPlus');
     if (btn) {
       btn.disabled = false;
-      btn.textContent = '重启服务';
+      btn.textContent = t('actions.restart') || '重启服务';
     }
   }
 }
@@ -1086,7 +1164,7 @@ async function loadAnalysisSessions() {
   analysisSessionsHasMore = true;
 
   const container = $('sessionListContainer');
-  container.innerHTML = '<div class="empty-state">读取中...</div>';
+  container.innerHTML = '<div class="empty-state">' + (t('common.loading') || '读取中...') + '</div>';
   try {
     const r = await fetch('/api/analysis/sessions?limit=50&offset=0');
     sessionSummaries = await r.json();
@@ -1098,7 +1176,7 @@ async function loadAnalysisSessions() {
     renderSessionList();
   } catch(e) {
     analysisSessionsLoading = false;
-    container.innerHTML = '<div class="empty-state"><p>加载历史失败</p></div>';
+    container.innerHTML = '<div class="empty-state"><p>' + (t('analysis.load_failed') || '加载历史失败') + '</p></div>';
   }
 }
 
@@ -1112,7 +1190,7 @@ async function loadNextAnalysisSessions() {
   const loader = document.createElement('div');
   loader.className = 'session-loading-indicator';
   loader.style.cssText = 'text-align: center; padding: 10px; font-size: 11px; color: var(--yorha-fg-dim);';
-  loader.textContent = '读取中...';
+  loader.textContent = t('common.loading') || '读取中...';
   container.appendChild(loader);
   
   try {
@@ -1165,7 +1243,7 @@ function renderSessionList() {
   const container = $('sessionListContainer');
   container.innerHTML = '';
   if (sessionSummaries.length === 0) {
-    container.innerHTML = '<div class="empty-state"><p>暂无请求分析记录</p><p style="font-size:11px;margin-top:4px">发送 API 请求即可生成诊断</p></div>';
+    container.innerHTML = '<div class="empty-state"><p>' + (t('analysis.empty') || '暂无请求分析记录') + '</p><p style="font-size:11px;margin-top:4px">' + (t('analysis.select_prompt') || '发送 API 请求即可生成诊断') + '</p></div>';
     $('analysisMainPanel').style.display = 'none';
     $('analysisMainEmpty').style.display = '';
     return;
@@ -1200,14 +1278,19 @@ async function showSessionDetail(id) {
 
     $('ansSessionId').textContent = 'REPORT #' + id.substring(5, 11).toUpperCase();
     $('ansRequestCount').textContent = s.request_count;
-    $('ansTokens').textContent = `${s.total_tokens} (入: ${s.prompt_tokens} / 出: ${s.completion_tokens})`;
+    const tokenIn = t('analysis.token_in') || '入';
+    const tokenOut = t('analysis.token_out') || '出';
+    const tokenHit = t('analysis.token_hit') || '命中';
+    $('ansTokens').textContent = `${s.total_tokens} (${tokenIn}: ${s.prompt_tokens} / ${tokenOut}: ${s.completion_tokens})`;
     
     const ratio = formatCacheRatio(s.cache_hit_tokens, s.cache_miss_tokens);
-    $('ansCacheRatio').textContent = `${ratio} (命中: ${s.cache_hit_tokens})`;
+    $('ansCacheRatio').textContent = `${ratio} (${tokenHit}: ${s.cache_hit_tokens})`;
     
-    $('ansRetries').textContent = s.retries + ' 次重试';
+    const retriesLabel = t('analysis.retries', { count: s.retries }) || (s.retries + ' 次重试');
+    $('ansRetries').textContent = retriesLabel;
     $('ansRetries').style.display = s.retries > 0 ? '' : 'none';
-    $('ansErrors').textContent = s.errors + ' 异常';
+    const errorsLabel = t('analysis.errors', { count: s.errors }) || (s.errors + ' 异常');
+    $('ansErrors').textContent = errorsLabel;
     $('ansErrors').style.display = s.errors > 0 ? '' : 'none';
 
     // 提取 tools 信息
@@ -1236,7 +1319,7 @@ async function showSessionDetail(id) {
 
     await loadChatTimeline(id, true);
   } catch(e) {
-    triggerAlert('加载详情失败');
+    triggerAlert(t('analysis.load_detail_failed') || '加载详情失败');
   }
 }
 
@@ -1272,7 +1355,7 @@ async function loadChatTimeline(sessionId, reset = false) {
   analysisTimelineState.loading = true;
   const loadingNode = document.createElement('div');
   loadingNode.className = 'system-notice';
-  loadingNode.textContent = '加载中...';
+  loadingNode.textContent = t('analysis.loading') || t('common.loading') || '加载中...';
   timeline.appendChild(loadingNode);
 
   try {
@@ -1293,7 +1376,7 @@ async function loadChatTimeline(sessionId, reset = false) {
       more.className = 'btn btn-secondary';
       more.style.margin = '12px auto';
       more.style.display = 'block';
-      more.textContent = '加载更多';
+      more.textContent = t('analysis.load_more') || '加载更多';
       more.onclick = () => {
         more.remove();
         loadChatTimeline(sessionId, false);
@@ -1301,7 +1384,7 @@ async function loadChatTimeline(sessionId, reset = false) {
       timeline.appendChild(more);
     }
   } catch (e) {
-    loadingNode.textContent = '时间线加载失败';
+    loadingNode.textContent = t('analysis.timeline_load_failed') || '时间线加载失败';
   } finally {
     analysisTimelineState.loading = false;
   }
@@ -1319,16 +1402,20 @@ function createUserTurnDOM(sessionId, group) {
     : group.summary.duration_ms + 'ms';
   const headerParts = [];
   if (group.summary.tool_count > 0) headerParts.push(`${group.summary.tool_count}个工具` + (group.summary.tool_names ? `(${group.summary.tool_names})` : ''));
-  if (group.summary.thinking_chars > 0) headerParts.push(`思考${group.summary.thinking_chars}字`);
-  if (group.summary.reply_chars > 0) headerParts.push(`回复${group.summary.reply_chars}字`);
-  headerParts.push(`耗时${durStr}`);
+  const nThinking = group.summary.thinking_chars || 0;
+  if (nThinking > 0) headerParts.push(t('analysis.thinking_chars', { n: nThinking }) || `思考${nThinking}字`);
+  const nReply = group.summary.reply_chars || 0;
+  if (nReply > 0) headerParts.push(t('analysis.reply_chars', { n: nReply }) || `回复${nReply}字`);
+  const durLabel = t('analysis.duration', { dur: durStr }) || `耗时${durStr}`;
+  headerParts.push(durLabel);
   const headerMeta = headerParts.join(' · ');
 
   const timeStr = new Date(group.start_time).toLocaleTimeString('zh-CN', {hour:'2-digit',minute:'2-digit',second:'2-digit'});
+  const userQ = t('analysis.user_question', { id: group.turn_id }) || `用户提问 #${group.turn_id}`;
   const header = document.createElement('div');
   header.style.cssText = 'padding: 8px 12px; background: rgba(0,0,0,0.06); cursor: pointer; display:flex; justify-content:space-between; align-items:center; font-size: 11px;';
   header.innerHTML = `
-    <span style="color: var(--yorha-fg-dim);">▼ 用户提问 #${group.turn_id} (${timeStr})</span>
+    <span style="color: var(--yorha-fg-dim);">▼ ${userQ} (${timeStr})</span>
     <span style="color: var(--yorha-accent); font-size: 10px;">${escapeHtml(headerMeta)}</span>
   `;
 
@@ -1345,7 +1432,7 @@ function createUserTurnDOM(sessionId, group) {
     if (ev.phase === 'analyzer' || ev.phase === 'retry') {
       const notice = document.createElement('div');
       notice.className = ev.phase === 'analyzer' ? 'system-notice danger' : 'system-notice success';
-      const title = ev.phase === 'analyzer' ? '系统：并行防无限思考分析已触发' : '系统：反无限思考重试已执行';
+      const title = ev.phase === 'analyzer' ? (t('analysis.analyzer_triggered') || '系统：并行防无限思考分析已触发') : (t('analysis.retry_executed') || '系统：反无限思考重试已执行');
       notice.innerHTML = `
         <div class="system-notice-title">
           <span>${title}</span>
@@ -1376,9 +1463,11 @@ function createStepDOM(sessionId, step) {
   switch (step.kind) {
     case 'user_message': {
       node.className = 'yorha-msg-bubble user';
+      const roleUser = t('analysis.role_user') || '用户';
+      const emptyC = t('analysis.empty_content') || '（空内容）';
       node.innerHTML = `
-        <div class="bubble-meta"><span>用户</span></div>
-        ${genRefCollapsibleHtml(step.preview || '(空内容)', step.content_ref, sessionId, 'content')}
+        <div class="bubble-meta"><span>${roleUser}</span></div>
+        ${genRefCollapsibleHtml(step.preview || emptyC, step.content_ref, sessionId, 'content')}
       `;
       break;
     }
@@ -1386,7 +1475,7 @@ function createStepDOM(sessionId, step) {
       const rLen = step.reasoning_preview ? step.reasoning_preview.length : 0;
       node.innerHTML = `
         <div class="log-chip" data-session-id="${escapeHtml(sessionId)}" data-ref="${escapeHtml(encodeContentRef(step.reasoning_ref))}" data-preview="${escapeHtml(step.reasoning_preview || '')}">
-          <div class="log-chip-title" onclick="toggleRefChip(this)">🤔 DEEPSEEK THINKING PATH${step.duration_ms ? ' (' + (step.duration_ms >= 1000 ? (step.duration_ms/1000).toFixed(1)+'s' : step.duration_ms+'ms') + ')' : ''}${rLen ? ' ' + rLen + '字' : ''} (点击展开/折叠)</div>
+          <div class="log-chip-title" onclick="toggleRefChip(this)">🤔 ${t('analysis.thinking_path', { n: rLen }) || ('DEEPSEEK THINKING PATH (点击展开/折叠 ' + rLen + '字)')}${step.duration_ms ? ' (' + (step.duration_ms >= 1000 ? (step.duration_ms/1000).toFixed(1)+'s' : step.duration_ms+'ms') + ')' : ''}</div>
           <div class="log-chip-content" style="white-space:pre-wrap;"></div>
         </div>
       `;
@@ -1397,31 +1486,35 @@ function createStepDOM(sessionId, step) {
       const ref = step.tool_input_ref || null;
       node.innerHTML = `
         <div style="padding: 6px 8px; border-left: 3px solid var(--yorha-accent); background: rgba(0,0,0,0.04); border-radius: 0 3px 3px 0;">
-          <div style="font-weight:600; font-size:11px; color: var(--yorha-accent); margin-bottom: 4px;">🔧 工具调用</div>
+          <div style="font-weight:600; font-size:11px; color: var(--yorha-accent); margin-bottom: 4px;">🔧 ${t('analysis.role_tool_call') || '工具调用'}</div>
           ${renderToolCallCard(tc, ref, sessionId)}
         </div>
       `;
       break;
     }
     case 'tool_result': {
-      const lenStr = step.preview ? step.preview.length + '字' : '';
+      const lenStr = step.preview ? step.preview.length + (t('analysis.thinking_chars', {n: ''}).includes('字') ? '字' : '') : '';
       const pairedHint = step.paired_tool_call_id ? ' [已配对]' : '';
       node.className = 'system-notice success';
       node.style.cssText = 'border-color: var(--yorha-accent); background: rgba(205,90,63,0.03); margin-bottom: 8px;';
+      const roleToolRes = t('analysis.role_tool_result') || '工具结果 (Tool Result)';
+      const emptyC2 = t('analysis.empty_content') || '（空内容）';
       node.innerHTML = `
         <div class="system-notice-title" style="color:var(--yorha-accent)">
-          <span>📎 工具结果 (Tool Result)${lenStr ? ' ' + lenStr : ''}${pairedHint}</span>
+          <span>📎 ${roleToolRes}${lenStr ? ' ' + lenStr : ''}${pairedHint}</span>
         </div>
-        ${genRefCollapsibleHtml(step.preview || '(空内容)', step.content_ref, sessionId, 'tool_result')}
+        ${genRefCollapsibleHtml(step.preview || emptyC2, step.content_ref, sessionId, 'tool_result')}
       `;
       break;
     }
     case 'assistant_reply': {
       node.className = 'yorha-msg-bubble assistant';
       const durHint = step.duration_ms ? `<span style="color:var(--yorha-fg-dim); font-size:10px;">${step.duration_ms >= 1000 ? (step.duration_ms/1000).toFixed(1)+'s' : step.duration_ms+'ms'}</span>` : '';
+      const roleAi = t('analysis.role_ai') || 'AI 响应';
+      const emptyC3 = t('analysis.empty_content') || '（空内容）';
       node.innerHTML = `
-        <div class="bubble-meta"><span>🤖 AI 响应</span> ${durHint}</div>
-        ${genRefCollapsibleHtml(step.preview || '(空内容)', step.content_ref, sessionId, 'content')}
+        <div class="bubble-meta"><span>🤖 ${roleAi}</span> ${durHint}</div>
+        ${genRefCollapsibleHtml(step.preview || emptyC3, step.content_ref, sessionId, 'content')}
       `;
       break;
     }
@@ -1435,7 +1528,7 @@ function createTimelineItemDOM(sessionId, item) {
   if (item.type === 'event') {
     const notice = document.createElement('div');
     notice.className = item.phase === 'analyzer' ? 'system-notice danger' : 'system-notice success';
-    const title = item.phase === 'analyzer' ? '系统：并行防无限思考分析已触发' : '系统：反无限思考重试已执行';
+    const title = item.phase === 'analyzer' ? (t('analysis.analyzer_triggered') || '系统：并行防无限思考分析已触发') : (t('analysis.retry_executed') || '系统：反无限思考重试已执行');
     notice.innerHTML = `
       <div class="system-notice-title">
         <span>${title}</span>
@@ -1466,15 +1559,15 @@ function createTimelineItemDOM(sessionId, item) {
     node.style.background = 'rgba(205,90,63,0.03)';
   }
 
-  let roleName = '用户';
+  let roleName = t('analysis.role_user') || '用户';
   if (role === 'system') {
-    roleName = '系统 (System)';
+    roleName = t('analysis.role_system') || '系统 (System)';
   } else if (isTool) {
-    roleName = '工具返回内容 (Tool Result)';
+    roleName = t('analysis.role_tool_result') || '工具返回内容 (Tool Result)';
   } else if (isPureToolCall) {
-    roleName = '调用工具内容 (Tool Call)';
+    roleName = t('analysis.role_tool_call') || '调用工具内容 (Tool Call)';
   } else if (isAssistant) {
-    roleName = 'AI 响应';
+    roleName = t('analysis.role_ai') || 'AI 响应';
   }
 
   const contentField = isTool ? 'tool_result' : 'content';
@@ -1501,7 +1594,7 @@ function createTimelineItemDOM(sessionId, item) {
     } else {
       let textHtml = '';
       if (!item.preview) {
-        textHtml = `<div style="color:var(--yorha-fg-dim); font-style:italic;">仅包含思考或工具调用，无文本输出</div>`;
+        textHtml = `<div style="color:var(--yorha-fg-dim); font-style:italic;">${t('analysis.no_text_output') || '仅包含思考或工具调用，无文本输出'}</div>`;
       } else {
         textHtml = genLocalCollapsibleHtml(item.preview, contentField);
       }
@@ -1511,7 +1604,7 @@ function createTimelineItemDOM(sessionId, item) {
         const cards = item.tool_calls.map(tc => renderLocalToolCallCard(tc)).join('');
         toolHtml = `
           <div style="margin-bottom:10px; padding: 10px; border-left: 3px solid var(--yorha-accent); background: rgba(0,0,0,0.05);">
-            <div style="font-weight:600; font-size:11px; color: var(--yorha-accent); margin-bottom: 4px;">工具调用 (Tool Call)</div>
+            <div style="font-weight:600; font-size:11px; color: var(--yorha-accent); margin-bottom: 4px;">${t('analysis.role_tool_call') || '工具调用 (Tool Call)'}</div>
             ${cards}
           </div>
         `;
@@ -1526,7 +1619,8 @@ function createTimelineItemDOM(sessionId, item) {
   let toolsBadgeHtml = '';
   let toolsPanelHtml = '';
   if (role === 'user' && item.tools && item.tools.length > 0) {
-    toolsBadgeHtml = `<span class="badge" style="margin-left: 8px; cursor: pointer; background: var(--yorha-accent); color: #fff; padding: 1px 6px; font-size: 10px; font-weight: bold; border-radius: 2px;" onclick="const panel = this.closest('.yorha-msg-bubble').querySelector('.yorha-tools-panel'); panel.style.display = panel.style.display === 'none' ? 'block' : 'none';">调用工具：${item.tools.length}</span>`;
+    const toolBadge = t('analysis.tool_calls_badge', { count: item.tools.length }) || `调用工具：${item.tools.length}`;
+    toolsBadgeHtml = `<span class="badge" style="margin-left: 8px; cursor: pointer; background: var(--yorha-accent); color: #fff; padding: 1px 6px; font-size: 10px; font-weight: bold; border-radius: 2px;" onclick="const panel = this.closest('.yorha-msg-bubble').querySelector('.yorha-tools-panel'); panel.style.display = panel.style.display === 'none' ? 'block' : 'none';">${toolBadge}</span>`;
     
     const toolItemsHtml = item.tools.map(tool => `
       <div class="yorha-tool-item" style="margin-bottom: 6px;">
@@ -1534,14 +1628,14 @@ function createTimelineItemDOM(sessionId, item) {
           • ${escapeHtml(tool.name)}
         </div>
         <div class="yorha-tool-desc" style="display: none; margin-left: 12px; margin-top: 2px; font-size: 11px; color: var(--yorha-fg-dim); white-space: pre-wrap; font-family: monospace; border-left: 1px dashed var(--yorha-border); padding-left: 6px;">
-          ${escapeHtml(tool.description || '暂无工具描述')}
+          ${escapeHtml(tool.description || (t('analysis.no_tool_desc') || '暂无工具描述'))}
         </div>
       </div>
     `).join('');
 
     toolsPanelHtml = `
       <div class="yorha-tools-panel" style="display: none; margin: 8px 0; padding: 8px; border: 1px dashed var(--yorha-accent); border-radius: 3px; background: rgba(205,90,63,0.02);">
-        <div style="font-size: 10px; color: var(--yorha-fg-dim); margin-bottom: 6px; font-weight: bold; text-transform: uppercase;">加载的可用工具列表 (可用 Tools)</div>
+        <div style="font-size: 10px; color: var(--yorha-fg-dim); margin-bottom: 6px; font-weight: bold; text-transform: uppercase;">${t('analysis.available_tools') || '加载的可用工具列表 (可用 Tools)'}</div>
         ${toolItemsHtml}
       </div>
     `;
@@ -1559,7 +1653,7 @@ function createTimelineItemDOM(sessionId, item) {
 }
 
 function genLocalCollapsibleHtml(text, field = 'content') {
-  const safeText = escapeHtml(text || '(空内容)');
+  const safeText = escapeHtml(text || (t('analysis.empty_content') || '（空内容）'));
   const isTool = field === 'tool_calls' || field === 'tool_result';
   const limit = isTool ? 200 : 300;
   const contentStyle = isTool ? 'font-family:monospace; font-size:11px; word-break:break-all;' : '';
@@ -1573,11 +1667,11 @@ function genLocalCollapsibleHtml(text, field = 'content') {
     <div class="collapsible-text-container" style="${contentStyle}">
       <div class="text-collapsed">
         <div class="${contentClass}" style="white-space:pre-wrap; ${contentStyle}">${shortText}...</div>
-        <span style="${labelStyle}" onclick="this.parentElement.style.display='none'; this.parentElement.nextElementSibling.style.display='block';">[ 展 开 ]</span>
+        <span style="${labelStyle}" onclick="this.parentElement.style.display='none'; this.parentElement.nextElementSibling.style.display='block';">${t('analysis.expand') || '[ 展 开 ]'}</span>
       </div>
       <div class="text-expanded" style="display:none;">
         <div class="${contentClass}" style="white-space:pre-wrap; ${contentStyle}">${safeText}</div>
-        <span style="${labelStyle}" onclick="this.parentElement.style.display='none'; this.parentElement.previousElementSibling.style.display='block';">[ 收 起 ]</span>
+        <span style="${labelStyle}" onclick="this.parentElement.style.display='none'; this.parentElement.previousElementSibling.style.display='block';">${t('analysis.collapse') || '[ 收 起 ]'}</span>
       </div>
     </div>
   `;
@@ -1606,9 +1700,9 @@ function renderChatTimeline(turns) {
         if (msg.role === 'user' || msg.role === 'system') {
           const uBubble = document.createElement('div');
           uBubble.className = 'yorha-msg-bubble user';
-          let roleName = msg.role === 'system' ? '系统 (System)' : '用户';
+          let roleName = msg.role === 'system' ? (t('analysis.role_system') || '系统 (System)') : (t('analysis.role_user') || '用户');
           
-          const txt = msg.content || '(空内容)';
+          const txt = msg.content || (t('analysis.empty_content') || '（空内容）');
           let bodyHtml = genCollapsibleHtml(txt, tid, 'content', mIdx);
           
           let contentHtml = `
@@ -1623,10 +1717,16 @@ function renderChatTimeline(turns) {
             const primaryEvent = turn.events.find(e => e.phase === 'primary');
             
             let detailsHtml = "";
-            if (turn.system_modified) detailsHtml += "• System Prompt 拼接位置已重组优化\n";
-            if (turn.extra_injected) detailsHtml += "• 注入了额外定义的最高优先级指令\n";
+            if (turn.system_modified) detailsHtml += (t('analysis.optimization_recombined') || "• System Prompt 拼接位置已重组优化") + "\n";
+            if (turn.extra_injected) detailsHtml += (t('analysis.optimization_extra') || "• 注入了额外定义的最高优先级指令") + "\n";
+            const snapLabel = t('analysis.config_snapshot') || '[配置快照]:';
+            const tmLabel = t('analysis.thinking_mode_label') || '思考模式';
+            const reLabel = t('analysis.reasoning_effort_label') || '推理强度';
+            const mtLabel = t('analysis.max_tokens_label') || 'MaxTokens';
+            const def = t('analysis.default') || '默认';
+            const unlim = t('analysis.unlimited') || '不限制';
             if (primaryEvent && primaryEvent.request) {
-              detailsHtml += `\n[配置快照]:\n- 思考模式: ${primaryEvent.request.thinking_mode || '默认'}\n- 推理强度: ${primaryEvent.request.reasoning_effort || '默认'}\n- MaxTokens: ${primaryEvent.request.max_tokens || '不限制'}`;
+              detailsHtml += `\n${snapLabel}\n- ${tmLabel}: ${primaryEvent.request.thinking_mode || def}\n- ${reLabel}: ${primaryEvent.request.reasoning_effort || def}\n- ${mtLabel}: ${primaryEvent.request.max_tokens || unlim}`;
             }
 
             contentHtml += `
@@ -1649,7 +1749,8 @@ function renderChatTimeline(turns) {
           const rawStr = msg.content || '';
           let resultBodyHtml = genCollapsibleHtml(rawStr, tid, 'content', mIdx);
 
-          notice.innerHTML = `<div class="system-notice-title" style="color:var(--yorha-accent)"><span>工具返回内容 (Tool Result)</span></div>${resultBodyHtml}`;
+          const roleTR = t('analysis.role_tool_result') || '工具返回内容 (Tool Result)';
+          notice.innerHTML = `<div class="system-notice-title" style="color:var(--yorha-accent)"><span>${roleTR}</span></div>${resultBodyHtml}`;
           timeline.appendChild(notice);
 
         } else if (msg.role === 'assistant') {
@@ -1667,7 +1768,7 @@ function renderChatTimeline(turns) {
             
             let contentHtml = `
               <div class="system-notice-title" style="color:var(--yorha-accent); display:flex; justify-content:space-between; align-items:center;">
-                <span>调用工具内容 (Tool Call)</span>
+                <span>${t('analysis.role_tool_call') || '调用工具内容 (Tool Call)'}</span>
                 ${logId ? `<span class="jump-raw-btn" onclick="jumpToRawLog(${logId})" style="margin-left:auto;">[原始数据]</span>` : ''}
               </div>
             `;
@@ -1697,7 +1798,7 @@ function renderChatTimeline(turns) {
             
             let contentHtml = `
               <div class="bubble-meta">
-                <span>AI 响应</span>
+                <span>${t('analysis.role_ai') || 'AI 响应'}</span>
                 ${logId ? `<span class="jump-raw-btn" onclick="jumpToRawLog(${logId})">[原始数据]</span>` : ''}
               </div>
             `;
@@ -1718,7 +1819,7 @@ function renderChatTimeline(turns) {
                 const ref = toolRefs[idx] || null;
                 return renderToolCallCard(tc, ref, currentSessionId);
               }).join('');
-              contentHtml += `<div style="margin-bottom:10px; padding: 10px; border-left: 3px solid var(--yorha-accent); background: rgba(0,0,0,0.05);"><div style="font-weight:600; font-size:11px; color: var(--yorha-accent); margin-bottom: 4px;">工具调用 (Tool Call)</div>${toolCallBodyHtml}</div>`;
+              contentHtml += `<div style="margin-bottom:10px; padding: 10px; border-left: 3px solid var(--yorha-accent); background: rgba(0,0,0,0.05);"><div style="font-weight:600; font-size:11px; color: var(--yorha-accent); margin-bottom: 4px;">${t('analysis.role_tool_call') || '工具调用 (Tool Call)'}</div>${toolCallBodyHtml}</div>`;
             }
 
             if (msg.content) {
@@ -1726,7 +1827,7 @@ function renderChatTimeline(turns) {
               let bodyHtml = genCollapsibleHtml(txt, tid, 'content', mIdx);
               contentHtml += bodyHtml;
             } else {
-              contentHtml += `<div style="color:var(--yorha-fg-dim); font-style:italic;">仅包含思考或工具调用，无文本输出</div>`;
+              contentHtml += `<div style="color:var(--yorha-fg-dim); font-style:italic;">${t('analysis.no_text_output') || '仅包含思考或工具调用，无文本输出'}</div>`;
             }
 
             aBubble.innerHTML = contentHtml;
@@ -1741,10 +1842,10 @@ function renderChatTimeline(turns) {
           notice.className = 'system-notice danger';
           notice.innerHTML = `
             <div class="system-notice-title">
-              <span>系统：并行防无限思考分析已触发</span>
+              <span>${t('analysis.analyzer_triggered') || '系统：并行防无限思考分析已触发'}</span>
               <span class="jump-raw-btn" onclick="jumpToRawLog(${ev.log_id})">[原始数据]</span>
             </div>
-            <div>检测到模型可能陷入无限思考（完成状态: <b>${ev.response.finish_reason}</b>）。<br>分析器判定：<b>${ev.response.analyzer_judgment}</b></div>
+            <div>${t('analysis.analyzer_detected', { reason: ev.response.finish_reason || '', judgment: ev.response.analyzer_judgment || '' }) || `检测到模型可能陷入无限思考（完成状态: <b>${ev.response.finish_reason}</b>）。<br>分析器判定：<b>${ev.response.analyzer_judgment}</b>`}</div>
           `;
           timeline.appendChild(notice);
         } else if (ev.phase === 'retry') {
@@ -1752,10 +1853,10 @@ function renderChatTimeline(turns) {
           notice.className = 'system-notice success';
           notice.innerHTML = `
             <div class="system-notice-title">
-              <span>系统：反无限思考重试已执行</span>
+              <span>${t('analysis.retry_executed') || '系统：反无限思考重试已执行'}</span>
               <span class="jump-raw-btn" onclick="jumpToRawLog(${ev.log_id})">[原始数据]</span>
             </div>
-            <div>代理已强制重新整理思路并进行二次重试。使用模型：<b>${ev.response.retry_model}</b>，耗时: <b>${ev.latency_ms}ms</b>，重试状态：<b>${ev.response.finish_reason}</b></div>
+            <div>${t('analysis.retry_detail', { model: ev.response.retry_model || '', latency: ev.latency_ms || '', status: ev.response.finish_reason || '' }) || `代理已强制重新整理思路并进行二次重试。使用模型：<b>${ev.response.retry_model}</b>，耗时: <b>${ev.latency_ms}ms</b>，重试状态：<b>${ev.response.finish_reason}</b>`}</div>
           `;
           timeline.appendChild(notice);
         }
@@ -1772,7 +1873,7 @@ function renderChatTimeline(turns) {
         
         let contentHtml = `
           <div class="bubble-meta">
-            <span>用户 (轮次 #${turn.turn_id})</span>
+            <span>${t('analysis.user_turn', { id: turn.turn_id }) || `用户 (轮次 #${turn.turn_id})`}</span>
           </div>
           ${bodyHtml}
         `;
@@ -1781,10 +1882,16 @@ function renderChatTimeline(turns) {
           const primaryEvent = turn.events.find(e => e.phase === 'primary');
           
           let detailsHtml = "";
-          if (turn.system_modified) detailsHtml += "• System Prompt 拼接位置已重组优化\n";
-          if (turn.extra_injected) detailsHtml += "• 注入了额外定义的最高优先级指令\n";
+          if (turn.system_modified) detailsHtml += (t('analysis.optimization_recombined') || "• System Prompt 拼接位置已重组优化") + "\n";
+          if (turn.extra_injected) detailsHtml += (t('analysis.optimization_extra') || "• 注入了额外定义的最高优先级指令") + "\n";
           if (primaryEvent && primaryEvent.request) {
-            detailsHtml += `\n[配置快照]:\n- 思考模式: ${primaryEvent.request.thinking_mode || '默认'}\n- 推理强度: ${primaryEvent.request.reasoning_effort || '默认'}\n- MaxTokens: ${primaryEvent.request.max_tokens || '不限制'}`;
+            const snapL = t('analysis.config_snapshot') || '[配置快照]:';
+            const tmL = t('analysis.thinking_mode_label') || '思考模式';
+            const reL = t('analysis.reasoning_effort_label') || '推理强度';
+            const mtL = t('analysis.max_tokens_label') || 'MaxTokens';
+            const dL = t('analysis.default') || '默认';
+            const uL = t('analysis.unlimited') || '不限制';
+            detailsHtml += `\n${snapL}\n- ${tmL}: ${primaryEvent.request.thinking_mode || dL}\n- ${reL}: ${primaryEvent.request.reasoning_effort || dL}\n- ${mtL}: ${primaryEvent.request.max_tokens || uL}`;
           }
 
           contentHtml += `
@@ -1805,10 +1912,10 @@ function renderChatTimeline(turns) {
           notice.className = 'system-notice danger';
           notice.innerHTML = `
             <div class="system-notice-title">
-              <span>系统：并行防无限思考分析已触发</span>
+              <span>${t('analysis.analyzer_triggered') || '系统：并行防无限思考分析已触发'}</span>
               <span class="jump-raw-btn" onclick="jumpToRawLog(${ev.log_id})">[原始数据]</span>
             </div>
-            <div>检测到模型可能陷入无限思考（完成状态: <b>${ev.response.finish_reason}</b>）。<br>分析器判定：<b>${ev.response.analyzer_judgment}</b></div>
+            <div>${t('analysis.analyzer_detected', { reason: ev.response.finish_reason || '', judgment: ev.response.analyzer_judgment || '' }) || `检测到模型可能陷入无限思考（完成状态: <b>${ev.response.finish_reason}</b>）。<br>分析器判定：<b>${ev.response.analyzer_judgment}</b>`}</div>
           `;
           timeline.appendChild(notice);
         } else if (ev.phase === 'retry') {
@@ -1816,10 +1923,10 @@ function renderChatTimeline(turns) {
           notice.className = 'system-notice success';
           notice.innerHTML = `
             <div class="system-notice-title">
-              <span>系统：反无限思考重试已执行</span>
+              <span>${t('analysis.retry_executed') || '系统：反无限思考重试已执行'}</span>
               <span class="jump-raw-btn" onclick="jumpToRawLog(${ev.log_id})">[原始数据]</span>
             </div>
-            <div>代理已强制重新整理思路并进行二次重试。使用模型：<b>${ev.response.retry_model}</b>，耗时: <b>${ev.latency_ms}ms</b>，重试状态：<b>${ev.response.finish_reason}</b></div>
+            <div>${t('analysis.retry_detail', { model: ev.response.retry_model || '', latency: ev.latency_ms || '', status: ev.response.finish_reason || '' }) || `代理已强制重新整理思路并进行二次重试。使用模型：<b>${ev.response.retry_model}</b>，耗时: <b>${ev.latency_ms}ms</b>，重试状态：<b>${ev.response.finish_reason}</b>`}</div>
           `;
           timeline.appendChild(notice);
         }
@@ -1899,7 +2006,7 @@ function renderChatTimeline(turns) {
             let bodyHtml = genCollapsibleHtml(txt, tid, 'assistant_response');
             contentHtml += bodyHtml;
           } else {
-            contentHtml += `<div style="color:var(--yorha-fg-dim); font-style:italic;">仅包含思考或工具调用，无文本输出</div>`;
+            contentHtml += `<div style="color:var(--yorha-fg-dim); font-style:italic;">${t('analysis.no_text_output') || '仅包含思考或工具调用，无文本输出'}</div>`;
           }
 
           aBubble.innerHTML = contentHtml;
@@ -1986,7 +2093,7 @@ function genCollapsibleHtml(text, turnId, field, historyIdx = -1) {
     <div class="collapsible-text-container" style="cursor: pointer; ${contentStyle}" ${dataAttrs} onclick="toggleTextCollapse(this, event)">
       <div class="text-collapsed">
         <div class="${isTool ? '' : 'yorha-msg-content'}" style="white-space:pre-wrap;">${escapeHtml(shortText)}...</div>
-        <span style="${labelStyle} display: block; margin-top: 6px;">[ 展 开 ]</span>
+        <span style="${labelStyle} display: block; margin-top: 6px;">${t('analysis.expand') || '[ 展 开 ]'}</span>
       </div>
     </div>
   `;
@@ -2145,9 +2252,10 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 // ── 开始执行 ──
-loadLogs();
-setInterval(loadStatus, 5000);
-init();
+init().then(() => {
+  loadLogs();
+  setInterval(loadStatus, 5000);
+});
 
 // ── 气泡文字折叠切换 ──
 function toggleTextCollapse(container, event) {
@@ -2182,10 +2290,10 @@ function toggleTextCollapse(container, event) {
     if (isExpanded) {
       const shortText = fullText.substring(0, limit);
       contentInner.textContent = shortText + "...";
-      labelEl.textContent = '[ 展 开 ]';
+      labelEl.textContent = t('analysis.expand') || '[ 展 开 ]';
     } else {
       contentInner.textContent = fullText;
-      labelEl.textContent = '[ 收 起 ]';
+      labelEl.textContent = t('analysis.collapse') || '[ 收 起 ]';
     }
   }
 }

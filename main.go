@@ -30,7 +30,7 @@ func setRestartChannel(ch chan struct{}) {
 
 func main() {
 	portFlag := flag.Int("port", 0, "listening port (overrides config)")
-	noGUI := flag.Bool("no-gui", false, "do not open GUI window")
+	flag.Bool("no-gui", false, "do not open GUI window (已弃用，GUI 始终开启)")
 	flag.Parse()
 
 	var safeCfg *SafeConfig
@@ -97,19 +97,17 @@ func main() {
 			}
 		}()
 
-		// 异步打开 GUI
-		if !*noGUI && c.AutoOpenGUI {
-			if !hasGUI() {
-				go openGUI(fmt.Sprintf("http://127.0.0.1:%d", c.Port), shutdownCh)
-			} else {
-				navigateGUI(fmt.Sprintf("http://127.0.0.1:%d", c.Port))
-			}
+		// 异步打开 GUI（GUI 强制开启，不再支持关闭或禁用）
+		if !hasGUI() {
+			go openGUI(fmt.Sprintf("http://127.0.0.1:%d", c.Port), shutdownCh)
+		} else {
+			navigateGUI(fmt.Sprintf("http://127.0.0.1:%d", c.Port))
 		}
 
 		fmt.Printf("DSPlus v0.1.0\n")
 		fmt.Printf("Listening on http://%s:%d\n", bindHost, c.Port)
 		fmt.Printf("GUI: http://127.0.0.1:%d\n", c.Port)
-		fmt.Printf("Press Ctrl+C or close GUI window to stop\n")
+		fmt.Printf("GUI 强制开启。窗口关闭按钮（X）会最小化到托盘；使用托盘菜单“退出”或 Ctrl+C 停止服务\n")
 
 		setRuntimeState(c.Port, c.LANAccess)
 

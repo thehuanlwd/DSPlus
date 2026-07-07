@@ -4,7 +4,10 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"sync"
+	"syscall"
 )
 
 type Config struct {
@@ -14,7 +17,7 @@ type Config struct {
 	OpenAIUpstream           string `json:"openai_upstream"`
 	AnthropicUpstream        string `json:"anthropic_upstream"`
 	VerboseLogging           bool   `json:"verbose_logging"`
-	AutoOpenGUI              bool   `json:"auto_open_gui"`
+	Language                 string `json:"language"`
 	ThinkingMode             string `json:"thinking_mode"`
 	ReasoningEffort          string `json:"reasoning_effort"`
 	SystemPromptPlacement    string `json:"system_prompt_placement"`
@@ -45,7 +48,7 @@ func DefaultConfig() Config {
 		OpenAIUpstream:           "https://api.deepseek.com",
 		AnthropicUpstream:        "https://api.deepseek.com/anthropic",
 		VerboseLogging:           true,
-		AutoOpenGUI:              true,
+		Language:                 "",
 		ThinkingMode:             "enabled",
 		ReasoningEffort:          "max",
 		SystemPromptPlacement:    "first",
@@ -71,17 +74,60 @@ func configPath() string {
 	return filepath.Join(filepath.Dir(exe), "config.json")
 }
 
+// detectSystemLanguage 基于系统环境和 Windows API 自动判断首选语言。
+// 仅在首次启动（Language 为空）时使用，后续尊重用户在设置中的选择。
+func detectSystemLanguage() string {
+	// 优先检查常见环境变量（Unix/macOS/Windows 均可能设置）
+	for _, k := range []string{"LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"} {
+		if v := os.Getenv(k); v != "" {
+			v = strings.ToLower(strings.Split(v, ".")[0])
+			if strings.HasPrefix(v, "zh") {
+				return "zh"
+			}
+			if strings.HasPrefix(v, "en") {
+				return "en"
+			}
+		}
+	}
+
+	// Windows 下使用 kernel32.GetUserDefaultUILanguage（与 gui_webview 风格一致，无额外依赖）
+	if runtime.GOOS == "windows" {
+		kernel32 := syscall.NewLazyDLL("kernel32.dll")
+		proc := kernel32.NewProc("GetUserDefaultUILanguage")
+		ret, _, _ := proc.Call()
+		langID := uint16(ret)
+		// Primary language ID 位于低 10 位
+		primary := langID & 0x3ff
+		switch primary {
+		case 0x0004: // LANG_CHINESE
+			return "zh"
+		case 0x0009: // LANG_ENGLISH
+			return "en"
+		}
+	}
+
+	// 本项目主要面向中文用户，默认中文
+	return "zh"
+}
+
 func LoadConfig() (Config, error) {
 	cfg := DefaultConfig()
 	data, err := os.ReadFile(configPath())
 	if err != nil {
 		if os.IsNotExist(err) {
+			// 首次启动：自动检测并持久化
+			cfg.Language = detectSystemLanguage()
+			_ = SaveConfig(cfg)
 			return cfg, nil
 		}
 		return cfg, err
 	}
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return DefaultConfig(), err
+	}
+	if cfg.Language == "" {
+		cfg.Language = detectSystemLanguage()
+		_ = SaveConfig(cfg)
 	}
 	return cfg, nil
 }

@@ -24,7 +24,7 @@ Write-Host "DSPlus.exe built successfully." -ForegroundColor Green
 
 # 3. Launch proxy process in background
 Write-Host "[3/5] Starting DSPlus service in background..." -ForegroundColor Yellow
-Start-Process -FilePath ".\DSPlus.exe" -ArgumentList "-no-gui" -NoNewWindow
+Start-Process -FilePath ".\DSPlus.exe" -NoNewWindow
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Failed to start DSPlus service!" -ForegroundColor Red
     exit $LASTEXITCODE

@@ -220,7 +220,10 @@ func doExit() {
 func wndProc(hwnd uintptr, msg uint32, wParam uintptr, lParam uintptr) uintptr {
 	switch msg {
 	case WM_CLOSE:
-		pShowWindow.Call(hwnd, uintptr(SW_HIDE))
+		// 点击窗口关闭按钮（X）时隐藏窗口到托盘（而非退出）。
+		// 真正退出请使用托盘右键菜单的“退出”，或 Ctrl+C / 信号。
+		// 窗口的最小化按钮（_）仍会正常最小化到任务栏。
+		pShowWindow.Call(mainHwnd, uintptr(SW_HIDE))
 		return 0
 
 	case WM_TRAYICON:

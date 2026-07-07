@@ -430,18 +430,6 @@ func main() {
               <label>Anthropic 上游地址</label>
               <input type="text" id="cfgAnthropicUpstream" value="https://api.deepseek.com/anthropic">
             </div>
-
-
-
-            <div class="toggle-container">
-              <div class="toggle-info">
-                <span class="toggle-title">启动时打开 GUI</span>
-              </div>
-              <label class="yorha-switch">
-                <input type="checkbox" id="cfgAutoGUI" checked>
-                <span class="yorha-slider"></span>
-              </label>
-            </div>
           </div>
 
           <!-- 板块 2: 规则设置 (合并原大模型拦截器与Prompt注入) -->
@@ -1145,7 +1133,6 @@ Server: cloudflare`,
         document.getElementById('cfgOpenAIUpstream').value = 'https://api.deepseek.com';
         document.getElementById('cfgAnthropicUpstream').value = 'https://api.deepseek.com/anthropic';
         document.getElementById('cfgTheme').value = 'yorha';
-        document.getElementById('cfgAutoGUI').checked = true;
         document.getElementById('cfgThinkingMode').value = '';
         document.getElementById('cfgReasoningEffort').value = 'high';
         document.getElementById('cfgMaxTokensMode').value = '';

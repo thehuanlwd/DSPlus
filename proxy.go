@@ -98,7 +98,8 @@ func (s *ProxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if strings.HasPrefix(r.URL.Path, "/api/") || r.URL.Path == "/" || r.URL.Path == "/index.html" || r.URL.Path == "/index_v2.html" ||
 		strings.HasSuffix(r.URL.Path, ".css") || strings.HasSuffix(r.URL.Path, ".js") ||
-		strings.HasSuffix(r.URL.Path, ".png") || strings.HasSuffix(r.URL.Path, ".svg") {
+		strings.HasSuffix(r.URL.Path, ".png") || strings.HasSuffix(r.URL.Path, ".svg") ||
+		strings.HasSuffix(r.URL.Path, ".json") {
 		handleGUI(w, r, s.logger, s.config, s.analysisSvc)
 		return
 	}
