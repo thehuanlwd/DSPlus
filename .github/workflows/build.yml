@@ -1,0 +1,50 @@
+name: Build
+
+on:
+  push:
+    tags:
+      - '0.*'
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.goos }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: windows
+            goarch: amd64
+            ext: .exe
+          - goos: linux
+            goarch: amd64
+            ext: ''
+          - goos: darwin
+            goarch: amd64
+            ext: ''
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build (${{ matrix.goos }}/${{ matrix.goarch }})
+        env:
+          CGO_ENABLED: '0'
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -ldflags="-s -w" -o dsplus-${{ matrix.goos }}${{ matrix.ext }} .
+
+      - name: Upload release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: dsplus-${{ matrix.goos }}${{ matrix.ext }}
