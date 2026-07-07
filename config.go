@@ -4,10 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
-	"syscall"
 )
 
 type Config struct {
@@ -90,20 +88,9 @@ func detectSystemLanguage() string {
 		}
 	}
 
-	// Windows 下使用 kernel32.GetUserDefaultUILanguage（与 gui_webview 风格一致，无额外依赖）
-	if runtime.GOOS == "windows" {
-		kernel32 := syscall.NewLazyDLL("kernel32.dll")
-		proc := kernel32.NewProc("GetUserDefaultUILanguage")
-		ret, _, _ := proc.Call()
-		langID := uint16(ret)
-		// Primary language ID 位于低 10 位
-		primary := langID & 0x3ff
-		switch primary {
-		case 0x0004: // LANG_CHINESE
-			return "zh"
-		case 0x0009: // LANG_ENGLISH
-			return "en"
-		}
+	// 平台相关 UI 语言：Windows 用 kernel32，其它平台交由环境变量判断（见 lang_*.go）
+	if lang := platformUILanguage(); lang != "" {
+		return lang
 	}
 
 	// 本项目主要面向中文用户，默认中文
