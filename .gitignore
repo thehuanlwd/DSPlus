@@ -4,8 +4,22 @@ config.json
 # === 编译产物 ===
 *.exe
 *.exe~
+*.syso
 DSPlus_console.exe
+
+# === 运行时日志 ===
 antiloop_trace.log
+dsplus_startup.log
+*.jsonl
+
+# === 测试输出（由 test_client / test_triple_tools 生成）===
+test/*_log.json
+test/proxy_debug_logs.jsonl
+
+# === 分析导出与会话报告（本地生成）===
+session_*.md
+analysis_logs/
+
 # === Go ===
 *.test
 *.out
@@ -19,13 +33,15 @@ Desktop.ini
 # === IDE & 编辑器 ===
 .vscode/
 .idea/
+.claude/
 *.swp
 *.swo
 *~
 .tmp_repos/
 .gocache/
 yorha_ui/
-analysis_logs/
-yorha_ui/
 .ps_history/
 其他文档/
+
+# === 临时文件 ===
+ttt.txt

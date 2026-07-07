@@ -2,6 +2,17 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 文档地图
+
+| 位置 | 用途 | 是否入库 |
+|------|------|---------|
+| `CLAUDE.md`（本文件） | AI 入口：架构、模块、命令 | 是 |
+| `README.md` | 用户功能说明与接入指南 | 是 |
+| `docs/` | AI 开发记录：标准、坑点、设计规格（见 `docs/README.md`） | 是 |
+| `其他文档/` | 个人灵感与笔记 | **否** |
+
+修改代码前应先阅读 `docs/` 中与本次改动相关的文档，尤其是坑点记录与设计规格。
+
 ## 项目概述
 
 DSPlus 是一个本地运行的 **分析+强化系统**。它作为一个轻量级的 API 中转代理，专为 DeepSeek 等模型设计。它能够完整分析原始请求和返回数据，其核心系统能力包含：
