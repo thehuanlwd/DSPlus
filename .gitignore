@@ -15,6 +15,7 @@ dsplus_startup.log
 # === 测试输出（由 test_client / test_triple_tools 生成）===
 test/*_log.json
 test/proxy_debug_logs.jsonl
+benchmarks/
 
 # === 分析导出与会话报告（本地生成）===
 session_*.md

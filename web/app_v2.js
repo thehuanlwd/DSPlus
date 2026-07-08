@@ -1696,11 +1696,37 @@ function renderChatTimeline(turns) {
     const turn = turns[tid];
 
     if (turn.chat_history && turn.chat_history.length > 0) {
+      // 系统提示词单独列出：有 system 消息则显示在该 turn 用户消息上方；
+      // 拼接模式下 chat_history 中不存在 system 角色消息，自然不显示。
+      const systemMsgs = turn.chat_history.filter(m => m.role === 'system');
+      if (systemMsgs.length > 0) {
+        const sysBlock = document.createElement('div');
+        sysBlock.className = 'yorha-system-prompt-block';
+        sysBlock.style.cssText = 'margin-bottom: 12px; border: 1px solid var(--yorha-accent); border-radius: 4px; overflow: hidden;';
+        const sysHeader = document.createElement('div');
+        sysHeader.style.cssText = 'padding: 6px 10px; background: rgba(205,90,63,0.08); font-size: 11px; font-weight: 600; color: var(--yorha-accent); display: flex; align-items: center; gap: 6px;';
+        sysHeader.innerHTML = `<span>📋 ${t('analysis.system_prompt_label') || '系统提示词 (System Prompt)'}</span>` + (systemMsgs.length > 1 ? `<span style="font-weight:400;opacity:.7;">×${systemMsgs.length}</span>` : '');
+        sysBlock.appendChild(sysHeader);
+        const sysBody = document.createElement('div');
+        sysBody.style.cssText = 'padding: 8px 10px;';
+        systemMsgs.forEach((m, i) => {
+          const txt = m.content || (t('analysis.empty_content') || '（空内容）');
+          const origIdx = turn.chat_history.indexOf(m);
+          sysBody.insertAdjacentHTML('beforeend', genCollapsibleHtml(txt, tid, 'content', origIdx));
+          if (i < systemMsgs.length - 1) {
+            sysBody.insertAdjacentHTML('beforeend', '<hr style="border:none;border-top:1px dashed var(--yorha-border);margin:8px 0;">');
+          }
+        });
+        sysBlock.appendChild(sysBody);
+        timeline.appendChild(sysBlock);
+      }
+
       turn.chat_history.forEach((msg, mIdx) => {
-        if (msg.role === 'user' || msg.role === 'system') {
+        if (msg.role === 'system') return;
+        if (msg.role === 'user') {
           const uBubble = document.createElement('div');
           uBubble.className = 'yorha-msg-bubble user';
-          let roleName = msg.role === 'system' ? (t('analysis.role_system') || '系统 (System)') : (t('analysis.role_user') || '用户');
+          const roleName = t('analysis.role_user') || '用户';
           
           const txt = msg.content || (t('analysis.empty_content') || '（空内容）');
           let bodyHtml = genCollapsibleHtml(txt, tid, 'content', mIdx);

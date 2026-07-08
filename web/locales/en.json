@@ -162,6 +162,7 @@
   "analysis.duration": "Duration {{dur}}",
   "analysis.role_user": "User",
   "analysis.role_system": "System",
+  "analysis.system_prompt_label": "System Prompt",
   "analysis.role_ai": "AI Response",
   "analysis.role_tool_result": "Tool Result",
   "analysis.role_tool_call": "Tool Call",

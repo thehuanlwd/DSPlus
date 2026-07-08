@@ -162,6 +162,7 @@
   "analysis.duration": "耗时{{dur}}",
   "analysis.role_user": "用户",
   "analysis.role_system": "系统 (System)",
+  "analysis.system_prompt_label": "系统提示词 (System Prompt)",
   "analysis.role_ai": "AI 响应",
   "analysis.role_tool_result": "工具返回内容 (Tool Result)",
   "analysis.role_tool_call": "调用工具内容 (Tool Call)",
