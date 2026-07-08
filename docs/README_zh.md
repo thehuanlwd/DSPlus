@@ -100,22 +100,22 @@ DSPlus 它是一个完全本地的中间层：
 
 ### 界面预览
 
-> 截图位于 `docs/images/`。部分 `.webp` 可能为动态演示。
+> 截图位于 `images/`。部分 `.webp` 可能为动态演示。
 
 <div align="center">
 
 <table style="border-collapse:separate;border-spacing:5px;margin:0 auto">
   <tr>
-    <td width="50%" align="center" style="padding:0"><img src="docs/images/DASHBOARD.jpg" alt="DSPlus Dashboard"></td>
-    <td width="50%" align="center" style="padding:0"><img src="docs/images/SETTINGS.jpg" alt="DSPlus Settings"></td>
+    <td width="50%" align="center" style="padding:0"><img src="images/DASHBOARD.jpg" alt="DSPlus Dashboard"></td>
+    <td width="50%" align="center" style="padding:0"><img src="images/SETTINGS.jpg" alt="DSPlus Settings"></td>
   </tr>
   <tr>
     <td align="center" style="padding:0"><b>实时仪表盘</b></td>
     <td align="center" style="padding:0"><b>系统设置</b></td>
   </tr>
   <tr>
-    <td width="50%" align="center" style="padding:0"><img src="docs/images/ANALYSIS.jpg" alt="DSPlus Analysis"></td>
-    <td width="50%" align="center" style="padding:0"><img src="docs/images/Classic%20(GitHub%20Dark).jpg" alt="DSPlus Classic Theme"></td>
+    <td width="50%" align="center" style="padding:0"><img src="images/ANALYSIS.jpg" alt="DSPlus Analysis"></td>
+    <td width="50%" align="center" style="padding:0"><img src="images/Classic%20(GitHub%20Dark).jpg" alt="DSPlus Classic Theme"></td>
   </tr>
   <tr>
     <td align="center" style="padding:0"><b>基础诊断分析</b></td>
@@ -127,8 +127,8 @@ DSPlus 它是一个完全本地的中间层：
 
 <table style="border-collapse:separate;border-spacing:5px;margin:0 auto">
   <tr>
-    <td width="50%" align="center" style="padding:0"><img src="docs/images/DASHBOARD.webp" alt="DSPlus Dashboard Demo"></td>
-    <td width="50%" align="center" style="padding:0"><img src="docs/images/PixPin_2026-07-07_19-43-25.webp" alt="DSPlus Demo"></td>
+    <td width="50%" align="center" style="padding:0"><img src="images/DASHBOARD.webp" alt="DSPlus Dashboard Demo"></td>
+    <td width="50%" align="center" style="padding:0"><img src="images/PixPin_2026-07-07_19-43-25.webp" alt="DSPlus Demo"></td>
   </tr>
   <tr>
     <td align="center" style="padding:0"><b>动态演示一</b></td>
