@@ -4,6 +4,50 @@ All notable changes to DSPlus are documented here. This project follows the [Kee
 
 ---
 
+## [0.2.1] - 2026-07-12
+
+> 🎉 **DSPlus v0.2.1 — 重要修复版。** 修复了一个导致系统提示词失效的严重 bug：当「系统提示词不修改 placement」搭配「额外提示词注入」时，系统提示词会被静默丢弃，使原始请求与重组后请求对应不上。同时新增多供应商支持、API Key 加密存储与请求审计自检脚本。
+
+### Added
+
+- **Multi-provider support** — `config.json` now accepts a `providers` list; each provider configures its own `base_url`, optional `anthropic_base_url`, and `api_key`, switched at runtime via `active_provider`. The GUI settings page can add / remove / switch providers. Legacy `api_key` / `openai_upstream` / `anthropic_upstream` fields remain backward compatible and are auto-upgraded into a default provider on load.
+- **Encrypted API Key storage** — API Keys and per-provider keys are now AES-GCM encrypted (with an `ENC:` prefix) before being written to `config.json` instead of stored in plaintext; legacy plaintext keys are upgraded to ciphertext on next save.
+- **Request audit & self-check** — every proxied request now appends a `RequestAudit` record to `test/request_audit.jsonl`, capturing both the configured intent (`Cfg*`) and the actual effective values in the transformed request (`Actual*`: presence of standalone system prompt, `<system_prompt>` / `<supreme_instruction>` tags, thinking type, reasoning_effort, max_tokens). New `audit/main.go` script: run `go run ./audit` to read the latest record and verify config-vs-actual consistency, exiting non-zero on mismatch.
+- **System prompt shown separately in GUI** — the settings page now has a dedicated area displaying the system prompt.
+
+### Changed
+
+- **max_tokens options expanded** — added a `384000` tier (hard cap: no value may exceed it, including the `custom` tier) and an `off` ("do not send") tier that forcibly removes the `max_tokens` parameter.
+
+### Fixed
+
+- **System prompt lost under "no change" placement + extra injection** — when `system_prompt_placement=none` while extra-prompt injection was enabled, the system prompt was destroyed *before* the "should we restructure?" check, causing silent loss and a mismatch between the original and transformed requests. System messages / fields are now preserved unless actually being restructured.
+- **Silent injection drops** — `appendToUserContent` now falls back to string coercion for unexpected `content` types (null / number) instead of silently discarding the injected block; OpenAI system collection now also accepts Anthropic-style text-block arrays.
+- **OpenAI / Anthropic transform parity** — the OpenAI path now also skips prompt restructuring during the `tool_result` stage (previously only Anthropic did), avoiding injecting prompts into tool-result messages.
+- **Anthropic thinking toggle symmetry** — forcing thinking *off* now explicitly writes `thinking:{type:disabled}` and clears leftover `output_config` / `reasoning_effort` (previously only the OpenAI path handled this), so a thinking field carried by the original request is truly disabled.
+
+## [0.2.1] 中文 - 2026-07-12
+
+> 🎉 **DSPlus v0.2.1 —— 重要修复版。** 修复了一个导致系统提示词失效的严重 bug：当「系统提示词不修改 placement」搭配「额外提示词注入」时，系统提示词会被静默丢弃，使原始请求与重组后请求对应不上。同时新增多供应商支持、API Key 加密存储与请求审计自检脚本。
+
+### Added（新增）
+
+- **多供应商支持** — `config.json` 现支持 `providers` 列表，每个供应商可单独配置 `base_url`、可选的 `anthropic_base_url` 与 `api_key`，并通过 `active_provider` 切换当前供应商；GUI 设置页可增删与切换供应商。旧版 `api_key` / `openai_upstream` / `anthropic_upstream` 字段保持向后兼容，加载时自动升级为默认供应商。
+- **API Key 加密存储** — 写入 `config.json` 前，API Key 与各供应商密钥统一使用 AES-GCM 加密（带 `ENC:` 前缀），不再明文落盘；旧版明文密钥在下次保存时自动升级为密文。
+- **请求审计与自检脚本** — 每次代理请求都会向 `test/request_audit.jsonl` 追加一条 `RequestAudit` 记录，同时保存「设置页面配置意图」(`Cfg*`) 与「重组后请求体实际生效值」(`Actual*`，含独立 system 提示词、`<system_prompt>` / `<supreme_instruction>` 标签、thinking 类型、reasoning_effort、max_tokens)。新增 `audit/main.go` 自检脚本：运行 `go run ./audit` 读取最近一条记录，逐项核对配置与实际生效是否一致，不一致时以非零退出码退出。
+- **系统提示词单独展示** — GUI 设置页新增独立的系统提示词展示区，便于查看与编辑。
+
+### Changed（变更）
+
+- **max_tokens 档位扩展** — 新增 `384000` 档（硬上限，所有档位含自定义均不得超过 384000）与「不发送」(`off`) 档（强制删除 `max_tokens` 参数）；自定义档同样受 384000 上限钳制。
+
+### Fixed（修复）
+
+- **系统提示词在「不修改」+ 额外注入组合下丢失** — 当 `system_prompt_placement=none` 但启用了额外提示词注入时，转换函数在「是否需重组」判断之前就销毁了 system 消息/字段，导致系统提示词被静默丢弃、原始请求与重组后请求对应不上。现仅在真正重组系统提示词时才丢弃，否则原样保留。
+- **注入块静默丢失** — `appendToUserContent` 对 `null` / 数字等非预期 `content` 类型改为字符串兜底拼接，不再静默丢弃注入块；OpenAI 系统提示词收集现兼容 Anthropic 风格 text 块数组（content 为数组时也能正确提取）。
+- **OpenAI / Anthropic 转换一致性** — OpenAI 路径在 `tool_result` 阶段也跳过提示词重组（此前仅 Anthropic 跳过），避免向工具结果消息注入系统 / 额外提示词。
+- **Anthropic 思考开关对称** — 强制关闭思考时显式写入 `thinking:{type:disabled}` 并清理残留的 `output_config` / `reasoning_effort`（此前仅 OpenAI 路径处理），确保原始请求自带的思考字段被真正关闭。
+
 ## [0.2.0] - 2026-07-07
 
 > 🎉 **DSPlus v0.2.0 is here — this is the product's true debut.**
