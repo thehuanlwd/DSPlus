@@ -146,12 +146,10 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 	if format == "openai" {
 		hasSystemPrompt = strings.Contains(originalBody, `"role":"system"`) ||
 			strings.Contains(originalBody, `"role": "system"`)
-		if data != nil && (hasSystemPrompt || (cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none")) {
-			extraPrompt := cfg.ExtraPrompt
-			if semanticType == "tool_result" {
-				extraPrompt = ""
-			}
-			transformed = transformOpenAIInPlace(data, cfg.SystemPromptPlacement, extraPrompt, cfg.ExtraPromptPlacement)
+		// 工具结果回传阶段（tool_result）跳过转换注入，保持 tool_result 纯净，
+		// 与 Anthropic 分支行为一致，避免向工具结果的 user 消息注入系统/额外提示词。
+		if data != nil && semanticType != "tool_result" && (hasSystemPrompt || (cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none")) {
+			transformed = transformOpenAIInPlace(data, cfg.SystemPromptPlacement, cfg.ExtraPrompt, cfg.ExtraPromptPlacement)
 		}
 	} else if format == "anthropic" {
 		hasSystemPrompt = strings.Contains(originalBody, `"system":`)
@@ -186,7 +184,10 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		transformedBody = body
 	}
 
-	upstreamURL := upstream + r.URL.Path
+	// 构建请求审计：对照「设置页面配置」与「重组后请求体实际生效」，供自检脚本核对。
+	audit := buildRequestAudit(data, format, cfg)
+
+	upstreamURL := joinUpstream(upstream, r.URL.Path)
 	if r.URL.RawQuery != "" {
 		upstreamURL += "?" + r.URL.RawQuery
 	}
@@ -198,8 +199,14 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 	}
 
 	copyHeaders(proxyReq.Header, r.Header)
-	proxyReq.Header.Set("Authorization", "Bearer "+cfg.APIKey)
-	proxyReq.Header.Del("x-api-key")
+	key := s.activeAPIKey()
+	proxyReq.Header.Set("Authorization", "Bearer "+key)
+	if format == "anthropic" {
+		// Anthropic 协议（含 DeepSeek / opencode.ai 的 Anthropic 兼容端点）用 x-api-key 认证。
+		proxyReq.Header.Set("x-api-key", key)
+	} else {
+		proxyReq.Header.Del("x-api-key")
+	}
 	proxyReq.Header.Set("Content-Length", strconv.Itoa(len(transformedBody)))
 	proxyReq.Host = ""
 
@@ -224,7 +231,11 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		OriginalBody:    condStr(cfg.VerboseLogging, truncateBody(originalBody), ""),
 		TransformedBody: condStr(cfg.VerboseLogging, truncateBody(string(transformedBody)), ""),
 		Status:          "connecting",
+		RequestAudit:    audit,
 	})
+
+	// 持久化请求审计，供自检脚本读取「最近一次」请求核对一致性。
+	s.logger.WriteAudit(audit)
 
 	resp, err := s.client.Do(proxyReq)
 	if err != nil {
@@ -271,6 +282,7 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		Response:        resp,
 		LogID:           logID,
 		StartTime:       startTime,
+
 		Format:          format,
 		Route:           r.URL.Path,
 		OriginalBody:    originalBody,
@@ -356,13 +368,15 @@ func (s *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 			originalBody,
 			string(bodyBytes),
 		)
-		traceEv.UpstreamRequest = string(transformedBody)
-		s.analysisSvc.SubmitEvent(traceEv)
+	traceEv.UpstreamRequest = string(transformedBody)
+	// 非流式整轮完成：回填总耗时（首响 latency_ms 已在上方 connecting 阶段记录）
+	s.logger.UpdateTotalMs(logID, time.Since(startTime).Milliseconds())
+	s.analysisSvc.SubmitEvent(traceEv)
 
-		copyHeaders(w.Header(), resp.Header)
-		w.WriteHeader(resp.StatusCode)
-		w.Write(bodyBytes)
-		return
+	copyHeaders(w.Header(), resp.Header)
+	w.WriteHeader(resp.StatusCode)
+	w.Write(bodyBytes)
+	return
 	}
 
 	// ── Normal path (anti-loop disabled): stream/buffer to client immediately ──
@@ -395,9 +409,17 @@ func (s *ProxyServer) injectThinkingParams(data map[string]interface{}, format s
 				data["reasoning_effort"] = cfg.ReasoningEffort
 			}
 		}
-	} else if format == "anthropic" && mode == "enabled" {
-		if cfg.ReasoningEffort != "" {
-			data["output_config"] = map[string]interface{}{"effort": cfg.ReasoningEffort}
+	} else if format == "anthropic" {
+		if mode == "disabled" {
+			// 强制关闭思考：清理可能残留的 thinking / output_config / reasoning_effort，
+			// 否则原始请求自带的思考字段会导致思考仍被启用（与 OpenAI 行为一致）。
+			data["thinking"] = map[string]interface{}{"type": "disabled"}
+			delete(data, "output_config")
+			delete(data, "reasoning_effort")
+		} else if mode == "enabled" {
+			if cfg.ReasoningEffort != "" {
+				data["output_config"] = map[string]interface{}{"effort": cfg.ReasoningEffort}
+			}
 		}
 	}
 }
@@ -405,7 +427,12 @@ func (s *ProxyServer) injectThinkingParams(data map[string]interface{}, format s
 func (s *ProxyServer) injectMaxTokens(data map[string]interface{}) {
 	cfg := s.config.Get()
 	mode := cfg.MaxTokensMode
-	if mode == "" {
+	switch mode {
+	case "":
+		return // 不修改：保持原始请求不变
+	case "off":
+		// 不发送：强制删除 max_tokens 参数（即使原始请求携带也移除）。
+		delete(data, "max_tokens")
 		return
 	}
 
@@ -415,10 +442,18 @@ func (s *ProxyServer) injectMaxTokens(data map[string]interface{}) {
 		maxTokens = 5000
 	case "32000":
 		maxTokens = 32000
+	case "384000":
+		maxTokens = 384000
 	case "custom":
 		maxTokens = cfg.MaxTokensCustom
 	default:
 		return
+	}
+
+	// 所有档位（含自定义）统一上限 384000，不得超过。
+	const maxTokensHardCap = 384000
+	if maxTokens > maxTokensHardCap {
+		maxTokens = maxTokensHardCap
 	}
 
 	if maxTokens <= 0 {
@@ -426,6 +461,83 @@ func (s *ProxyServer) injectMaxTokens(data map[string]interface{}) {
 	}
 
 	data["max_tokens"] = maxTokens
+}
+
+// buildRequestAudit 解析重组后的请求体，对照设置页面配置生成审计记录。
+// 返回的 RequestAudit 同时包含「意图配置」(Cfg*) 与「实际生效」(Actual*)，
+// 供自检脚本核对两者是否一致。
+func buildRequestAudit(data map[string]interface{}, format string, cfg Config) *RequestAudit {
+	a := &RequestAudit{
+		Time:                     time.Now(),
+		Format:                   format,
+		CfgSystemPromptPlacement: cfg.SystemPromptPlacement,
+		CfgExtraPromptPlacement:  cfg.ExtraPromptPlacement,
+		CfgExtraPromptEmpty:      cfg.ExtraPrompt == "",
+		CfgThinkingMode:          cfg.ThinkingMode,
+		CfgReasoningEffort:       cfg.ReasoningEffort,
+		CfgMaxTokensMode:         cfg.MaxTokensMode,
+	}
+
+	if data == nil {
+		return a
+	}
+
+	// 实际：是否存在独立 system 消息/字段
+	if format == "anthropic" {
+		_, a.ActualHasStandaloneSystem = data["system"]
+	} else {
+		if msgs, ok := data["messages"].([]interface{}); ok {
+			for _, m := range msgs {
+				if mm, ok := m.(map[string]interface{}); ok {
+					if role, _ := mm["role"].(string); role == "system" {
+						a.ActualHasStandaloneSystem = true
+						break
+					}
+				}
+			}
+		}
+	}
+
+	// 实际：消息体内是否含 <system_prompt> / <supreme_instruction> 标签
+	a.ActualHasSystemPromptTag = messagesContainTag(data, "<system_prompt>")
+	a.ActualHasSupremeInstruction = messagesContainTag(data, "<supreme_instruction>")
+
+	// 实际：思考参数
+	if thinking, ok := data["thinking"].(map[string]interface{}); ok {
+		a.ActualThinkingType, _ = thinking["type"].(string)
+	}
+	if eff, ok := data["reasoning_effort"].(string); ok {
+		a.ActualReasoningEffort = eff
+	}
+	if outputCfg, ok := data["output_config"].(map[string]interface{}); ok {
+		if eff, ok := outputCfg["effort"].(string); ok {
+			a.ActualReasoningEffort = eff
+		}
+	}
+	if mt, ok := data["max_tokens"].(float64); ok {
+		a.ActualMaxTokens = int(mt)
+	}
+
+	return a
+}
+
+// messagesContainTag 遍历 messages 中所有 user/assistant/system 消息的 content
+// （兼容 string 与 Anthropic text 块数组），判断是否存在目标标签子串。
+func messagesContainTag(data map[string]interface{}, tag string) bool {
+	msgs, ok := data["messages"].([]interface{})
+	if !ok {
+		return false
+	}
+	for _, m := range msgs {
+		mm, ok := m.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if extractTextContent(mm["content"]) != "" && strings.Contains(extractTextContent(mm["content"]), tag) {
+			return true
+		}
+	}
+	return false
 }
 
 func injectReasoningContent(data map[string]interface{}) {
@@ -736,11 +848,14 @@ func (s *ProxyServer) forwardStream(ctx *ProxyContext) {
 			secondRespBody,
 		)
 		retryEv.UpstreamRequest = string(secondReqBody)
-		retryEv.ParentID = "ev_" + strconv.FormatInt(ctx.StartTime.UnixNano(), 36)
-		s.analysisSvc.SubmitEvent(retryEv)
+	retryEv.ParentID = "ev_" + strconv.FormatInt(ctx.StartTime.UnixNano(), 36)
+	s.analysisSvc.SubmitEvent(retryEv)
 
-		return
-	}
+	// 防幻觉截断：主请求到此结束，回填整轮耗时（含首阶段生成与截断判定）
+	s.logger.UpdateTotalMs(ctx.LogID, time.Since(ctx.StartTime).Milliseconds())
+
+	return
+}
 
 	// ── 情况二：常规模式走完 ──
 	finalAction := s.updateFinalSemanticAction(ctx.LogID, ctx.SemanticType, ctx.HasTools, hasToolsInStream, finishReason)
@@ -764,6 +879,9 @@ func (s *ProxyServer) forwardStream(ctx *ProxyContext) {
 	if cfg.VerboseLogging {
 		s.logger.UpdateLastResponse(ctx.LogID, capture.String())
 	}
+
+	// 常规流式走完：回填整轮完成耗时（latency_ms 仍为首字节延迟）
+	s.logger.UpdateTotalMs(ctx.LogID, time.Since(ctx.StartTime).Milliseconds())
 
 	var pm TokenUsage
 	if lastUsage != nil {
@@ -859,6 +977,8 @@ func (s *ProxyServer) forwardBuffered(ctx *ProxyContext) {
 		string(bodyBytes),
 	)
 	traceEv.UpstreamRequest = string(ctx.TransformedBody)
+	// 非流式整轮完成：回填总耗时（首响 latency_ms 已在 connecting 阶段记录）
+	s.logger.UpdateTotalMs(ctx.LogID, time.Since(ctx.StartTime).Milliseconds())
 	s.analysisSvc.SubmitEvent(traceEv)
 }
 
@@ -1083,7 +1203,7 @@ func (s *ProxyServer) streamAndMonitorPhase1(ctx *ProxyContext, state *antiLoopS
 						200,
 						0,
 						"deepseek-chat",
-						cfg.OpenAIUpstream,
+						s.activeBaseURL(),
 						buildRequestMeta(ctx.Data, ctx.Format, ctx.Transformed, cfg.ExtraPrompt != "" && cfg.ExtraPromptPlacement != "none", ctx.SemanticType),
 						ResponseMeta{
 							AnalyzerJudgment: result.analysis.Judgment,
@@ -1589,6 +1709,9 @@ func (s *ProxyServer) finalizeStream(ctx *ProxyContext, state *antiLoopState) {
 	primaryEv.UpstreamRequest = string(ctx.TransformedBody)
 	primaryEv.ID = state.parentEventID
 	s.analysisSvc.SubmitEvent(primaryEv)
+
+	// anti-loop 流式完成：回填整轮完成耗时
+	s.logger.UpdateTotalMs(ctx.LogID, time.Since(ctx.StartTime).Milliseconds())
 }
 
 func (s *ProxyServer) forwardStreamWithAntiLoop(ctx *ProxyContext) {
@@ -1604,12 +1727,91 @@ func (s *ProxyServer) forwardStreamWithAntiLoop(ctx *ProxyContext) {
 	s.finalizeStream(ctx, state)
 }
 
+// activeProvider 返回当前选中的供应商；找不到时回退到第一个。
+func (s *ProxyServer) activeProvider() (Provider, bool) {
+	cfg := s.config.Get()
+	for _, p := range cfg.Providers {
+		if p.Name == cfg.ActiveProvider {
+			return p, true
+		}
+	}
+	if len(cfg.Providers) > 0 {
+		return cfg.Providers[0], true
+	}
+	return Provider{}, false
+}
+
+// selectUpstream 返回当前供应商对应当前请求格式的基础地址。
+// 同一供应商可同时服务 OpenAI 与 Anthropic 两种格式：
+//   - Anthropic 格式优先使用 AnthropicBaseURL（若已配置）；
+//   - 对已知 OpenAI 网关（如 api.deepseek.com）自动在其 base 后追加 /anthropic；
+//   - 否则回退到 BaseURL。
+// format 参数用于按请求格式选择正确端点，实现单地址自动匹配。
 func (s *ProxyServer) selectUpstream(format string) string {
+	if p, ok := s.activeProvider(); ok {
+		return s.resolveBaseURL(p, format)
+	}
 	cfg := s.config.Get()
 	if format == "anthropic" {
-		return cfg.AnthropicUpstream
+		if cfg.AnthropicUpstream != "" {
+			return cfg.AnthropicUpstream
+		}
+		if cfg.OpenAIUpstream != "" {
+			return cfg.OpenAIUpstream
+		}
+	} else {
+		if cfg.OpenAIUpstream != "" {
+			return cfg.OpenAIUpstream
+		}
+		if cfg.AnthropicUpstream != "" {
+			return cfg.AnthropicUpstream
+		}
 	}
-	return cfg.OpenAIUpstream
+	return "https://api.deepseek.com"
+}
+
+// resolveBaseURL 根据请求格式解析供应商的实际基础地址。
+func (s *ProxyServer) resolveBaseURL(p Provider, format string) string {
+	if format == "anthropic" {
+		if p.AnthropicBaseURL != "" {
+			return p.AnthropicBaseURL
+		}
+		// 自动匹配：DeepSeek 的 OpenAI 网关与 Anthropic 网关仅差一个 /anthropic 前缀。
+		if strings.Contains(p.BaseURL, "api.deepseek.com") && !strings.Contains(p.BaseURL, "/anthropic") {
+			return strings.TrimRight(p.BaseURL, "/") + "/anthropic"
+		}
+	}
+	return p.BaseURL
+}
+
+// activeBaseURL 返回当前供应商的基础地址（供重试/分析等内部调用使用）。
+func (s *ProxyServer) activeBaseURL() string {
+	if p, ok := s.activeProvider(); ok {
+		return p.BaseURL
+	}
+	return s.selectUpstream("")
+}
+
+// activeAPIKey 返回当前供应商的 API Key；为空时回退到全局 APIKey。
+func (s *ProxyServer) activeAPIKey() string {
+	if p, ok := s.activeProvider(); ok && p.APIKey != "" {
+		return p.APIKey
+	}
+	return s.config.Get().APIKey
+}
+
+// joinUpstream 将基础地址与请求路径安全拼接。
+// 若基础地址已以 /v1 结尾且路径也以 /v1/ 开头，则去掉重复前缀，
+// 以兼容 OpenAI 风格（base 含 /v1）与 DeepSeek 风格（base 不含 /v1）两种写法。
+func joinUpstream(base, path string) string {
+	base = strings.TrimRight(base, "/")
+	if base == "" {
+		return path
+	}
+	if strings.HasSuffix(base, "/v1") && strings.HasPrefix(path, "/v1/") {
+		return base + path[3:]
+	}
+	return base + path
 }
 
 func detectFormat(path string, body string) string {
@@ -2003,6 +2205,7 @@ func (s *ProxyServer) executeAndStreamAntiHallucination(
 
 	latency := time.Since(startTime).Milliseconds()
 	s.logger.UpdateOnResponse(secondLogID, retryResp.StatusCode, latency, "completed", nil, "", "")
+	s.logger.UpdateTotalMs(secondLogID, latency)
 
 	if lastUsage != nil {
 		s.logger.UpdateTokenUsageAndStatus(secondLogID, lastUsage, "completed")

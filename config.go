@@ -8,12 +8,23 @@ import (
 	"sync"
 )
 
+// Provider 表示一个上游供应商配置。
+// 每个供应商有独立的基础地址与 API Key；运行时仅使用“当前供应商”。
+type Provider struct {
+	Name             string `json:"name"`
+	BaseURL          string `json:"base_url"`
+	AnthropicBaseURL string `json:"anthropic_base_url"` // 可选：Anthropic 格式的专用基础地址；留空则自动推断
+	APIKey           string `json:"api_key"`             // 落盘时加密存储
+}
+
 type Config struct {
-	APIKey                   string `json:"api_key"`
+	APIKey                   string `json:"api_key"` // 保留：向后兼容与全局兜底
 	Port                     int    `json:"port"`
 	LANAccess                bool   `json:"lan_access"`
-	OpenAIUpstream           string `json:"openai_upstream"`
-	AnthropicUpstream        string `json:"anthropic_upstream"`
+	OpenAIUpstream           string `json:"openai_upstream"` // 保留：向后兼容兜底
+	AnthropicUpstream        string `json:"anthropic_upstream"` // 保留：向后兼容兜底
+	Providers                []Provider `json:"providers"`
+	ActiveProvider           string     `json:"active_provider"`
 	VerboseLogging           bool   `json:"verbose_logging"`
 	Language                 string `json:"language"`
 	ThinkingMode             string `json:"thinking_mode"`
@@ -45,6 +56,10 @@ func DefaultConfig() Config {
 		LANAccess:                false,
 		OpenAIUpstream:           "https://api.deepseek.com",
 		AnthropicUpstream:        "https://api.deepseek.com/anthropic",
+		Providers: []Provider{
+			{Name: "DeepSeek", BaseURL: "https://api.deepseek.com", APIKey: ""},
+		},
+		ActiveProvider: "DeepSeek",
 		VerboseLogging:           true,
 		Language:                 "",
 		ThinkingMode:             "enabled",
@@ -67,7 +82,13 @@ func DefaultConfig() Config {
 	}
 }
 
+// configFilePath 允许在测试（或特殊场景）中覆盖配置文件位置；为空时使用 exe 同目录默认路径。
+var configFilePath string
+
 func configPath() string {
+	if configFilePath != "" {
+		return configFilePath
+	}
 	exe, _ := os.Executable()
 	return filepath.Join(filepath.Dir(exe), "config.json")
 }
@@ -112,6 +133,34 @@ func LoadConfig() (Config, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return DefaultConfig(), err
 	}
+	// 解密落盘的 API Key（旧版明文无 ENC: 前缀则原样保留，下次保存时加密）。
+	if cfg.APIKey != "" {
+		if dec, err := decryptAPIKey(cfg.APIKey); err == nil {
+			cfg.APIKey = dec
+		}
+		// 解密失败时保留原值，避免崩溃；用户可在设置页重新填写。
+	}
+	// 解密各供应商的 API Key。
+	for i := range cfg.Providers {
+		if cfg.Providers[i].APIKey != "" {
+			if dec, err := decryptAPIKey(cfg.Providers[i].APIKey); err == nil {
+				cfg.Providers[i].APIKey = dec
+			}
+		}
+	}
+	// 向后兼容：旧配置没有 providers 时，用原先的 openai_upstream + 全局密钥生成一个默认供应商。
+	if len(cfg.Providers) == 0 {
+		name := "DeepSeek"
+		base := cfg.OpenAIUpstream
+		if base == "" {
+			base = "https://api.deepseek.com"
+		}
+		cfg.Providers = []Provider{{Name: name, BaseURL: base, APIKey: cfg.APIKey}}
+		cfg.ActiveProvider = name
+	}
+	if cfg.ActiveProvider == "" && len(cfg.Providers) > 0 {
+		cfg.ActiveProvider = cfg.Providers[0].Name
+	}
 	if cfg.Language == "" {
 		cfg.Language = detectSystemLanguage()
 		_ = SaveConfig(cfg)
@@ -120,7 +169,31 @@ func LoadConfig() (Config, error) {
 }
 
 func SaveConfig(cfg Config) error {
-	data, err := json.MarshalIndent(cfg, "", "  ")
+	// 落盘前对 API Key 与各供应商密钥进行加密混淆，避免以明文存储。
+	// 注意：Providers 是切片，saveCfg := cfg 仅做浅拷贝，会与传入 cfg 共享底层数组，
+	// 若直接写 saveCfg.Providers[i].APIKey = enc 会把内存中的明文密钥也改成密文，
+	// 导致代理向上游发送密文（API Key 失效）、前端小眼睛看到密文。必须先深拷贝切片。
+	saveCfg := cfg
+	if saveCfg.APIKey != "" {
+		enc, err := encryptAPIKey(saveCfg.APIKey)
+		if err != nil {
+			return err
+		}
+		saveCfg.APIKey = enc
+	}
+	saveCfg.Providers = make([]Provider, len(cfg.Providers))
+	for i := range cfg.Providers {
+		p := cfg.Providers[i]
+		if p.APIKey != "" {
+			enc, err := encryptAPIKey(p.APIKey)
+			if err != nil {
+				return err
+			}
+			p.APIKey = enc
+		}
+		saveCfg.Providers[i] = p
+	}
+	data, err := json.MarshalIndent(saveCfg, "", "  ")
 	if err != nil {
 		return err
 	}

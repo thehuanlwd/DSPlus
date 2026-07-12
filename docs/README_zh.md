@@ -555,7 +555,7 @@ config.json
 | `system_prompt_placement` | System Prompt 拼接位置，first / last / none |
 | `extra_prompt` | 额外高优先级指令 |
 | `extra_prompt_placement` | 额外 Prompt 注入位置，first / last / none |
-| `max_tokens_mode` | 不修改、5000、32000、自定义 |
+| `max_tokens_mode` | 不修改、5000、32000、384000、不发送（删除参数）、自定义（上限 384000） |
 | `max_tokens_custom` | 自定义 max_tokens 值 |
 | `auto_reasoning_content` | 自动补全 reasoning_content |
 | `auto_fix_empty_content` | 自动修复空 assistant content |

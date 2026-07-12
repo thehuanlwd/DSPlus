@@ -17,6 +17,7 @@ var (
 	runtimePort      int
 	runtimeLANAccess bool
 	appRestartCh     chan struct{}
+	serverStartTime  time.Time
 )
 
 func setRuntimeState(port int, lanAccess bool) {
@@ -32,6 +33,8 @@ func main() {
 	portFlag := flag.Int("port", 0, "listening port (overrides config)")
 	flag.Bool("no-gui", false, "do not open GUI window (已弃用，GUI 始终开启)")
 	flag.Parse()
+
+	serverStartTime = time.Now()
 
 	var safeCfg *SafeConfig
 	shutdownCh := make(chan struct{})
@@ -60,12 +63,12 @@ func main() {
 
 		c := safeCfg.Get()
 
-		initTrace()
-		svc := InitAnalysisService(safeCfg)
-		if svc != nil {
-			svc.config = safeCfg
-		}
-		logger := NewLogger(2000)
+	initTrace()
+	logger := NewLogger(2000)
+	svc := InitAnalysisService(safeCfg, logger)
+	if svc != nil {
+		svc.config = safeCfg
+	}
 		_ = os.Remove("test/proxy_debug_logs.jsonl") // 重启时清空旧的 debug 代理日志
 		proxy := NewProxyServer(safeCfg, logger, svc)
 		initWSHub(logger)
@@ -90,8 +93,15 @@ func main() {
 		// 异步启动 HTTP 服务
 		go func() {
 			log.Printf("[server] DSPlus starting on %s", addr)
-			log.Printf("[server] OpenAI upstream: %s", c.OpenAIUpstream)
-			log.Printf("[server] Anthropic upstream: %s", c.AnthropicUpstream)
+			if len(c.Providers) > 0 {
+				for _, p := range c.Providers {
+					log.Printf("[server] provider %q upstream: %s", p.Name, p.BaseURL)
+				}
+				log.Printf("[server] active provider: %s", c.ActiveProvider)
+			} else {
+				log.Printf("[server] OpenAI upstream: %s", c.OpenAIUpstream)
+				log.Printf("[server] Anthropic upstream: %s", c.AnthropicUpstream)
+			}
 			if err := server.Serve(ln); err != nil && err != http.ErrServerClosed {
 				log.Fatalf("[server] failed to start: %v", err)
 			}

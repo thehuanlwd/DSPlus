@@ -586,18 +586,32 @@ textarea {
 }
 
 .yorha-table th {
-  padding: 0.6rem 1rem;
+  padding: 0.6rem 0 0.6rem 1rem;
   background-color: var(--yorha-panel);
   color: var(--yorha-fg);
   font-weight: normal;
   border-bottom: 0.1rem solid var(--yorha-fg);
   letter-spacing: 0.15rem;
   text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .yorha-table td {
-  padding: 0.7rem 1rem;
+  padding: 0.7rem 0 0.7rem 1rem;
   border-bottom: 1px solid var(--yorha-panel);
+  white-space: nowrap;
+}
+
+/* API 端点列（URL）允许换行，其余列一律不换行（列宽由 auto 布局按文本自适应） */
+.yorha-table td.endpoint-cell {
+  white-space: normal;
+  word-break: break-all;
+}
+
+/* 末列（最右）保留右间隙，避免内容抵死右侧边缘 */
+.yorha-table th:last-child,
+.yorha-table td:last-child {
+  padding-right: 1rem;
 }
 
 .yorha-table tbody tr {
@@ -1069,6 +1083,96 @@ textarea {
   width: 100%;
 }
 
+.config-row input[type=text],
+.config-row input[type=password],
+.config-row input[type=number] {
+  height: 34.67px;
+  box-sizing: border-box;
+}
+
+/* ── API Key 密码框 + 小眼睛切换 ── */
+.yorha-password-input {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.yorha-password-input input {
+  width: 100%;
+  padding-right: 2.6rem; /* 给眼睛按钮留出空间 */
+}
+
+/* ── 供应商管理器布局 ── */
+.provider-select-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.provider-select-row .yorha-select-wrapper {
+  flex: 1;
+  min-width: 0;
+}
+
+.provider-select-row .yorha-select-trigger {
+  width: 100%;
+}
+
+.provider-select-row select {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 提高优先级以覆盖全局 button:not(:disabled) 的 display/padding，保证眼睛图标居中 */
+.yorha-password-input .yorha-eye-btn {
+  position: absolute;
+  right: 0.4rem;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 1.9rem;
+  height: 1.9rem;
+  padding: 0 !important;
+  border: none;
+  background: transparent;
+  color: var(--yorha-fg-dim);
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.yorha-password-input .yorha-eye-btn:hover {
+  color: var(--yorha-fg);
+  box-shadow: none;
+}
+
+/* 清除全局 button :before/:after 装饰（边框/填充动画），避免遮挡眼睛图标 */
+.yorha-password-input .yorha-eye-btn:before,
+.yorha-password-input .yorha-eye-btn:after {
+  content: none;
+  display: none;
+}
+
+.yorha-password-input .yorha-eye-btn svg {
+  width: 1.1rem;
+  height: 1.1rem;
+  display: block;
+}
+
+.yorha-password-input .yorha-eye-btn .eye-closed {
+  display: none;
+}
+
+.yorha-password-input .yorha-eye-btn.visible .eye-open {
+  display: none;
+}
+
+.yorha-password-input .yorha-eye-btn.visible .eye-closed {
+  display: block;
+}
+
 .toggle-container {
   display: flex;
   justify-content: space-between;
@@ -1210,6 +1314,8 @@ textarea {
 
 .yorha-select-trigger {
   padding: 0.5rem 2rem 0.5rem 1rem;
+  height: 34.67px;
+  box-sizing: border-box;
   background-color: var(--yorha-select-trigger-bg);
   color: var(--yorha-select-trigger-fg);
   border: none;

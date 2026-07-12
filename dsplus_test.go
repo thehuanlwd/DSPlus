@@ -399,6 +399,85 @@ func TestConfigPersistence(t *testing.T) {
 	}
 }
 
+// ── API Key 加密混淆 round-trip ───────────────────────────────────────────────
+
+func TestAPIKeyCryptoRoundTrip(t *testing.T) {
+	plain := "sk-1234567890abcdefghij"
+	enc, err := encryptAPIKey(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if enc == plain {
+		t.Error("加密后不应等于明文")
+	}
+	if !strings.HasPrefix(enc, apiKeyEncPrefix) {
+		t.Errorf("加密结果应带 %q 前缀: %q", apiKeyEncPrefix, enc)
+	}
+	dec, err := decryptAPIKey(enc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dec != plain {
+		t.Errorf("解密结果 %q != 明文 %q", dec, plain)
+	}
+}
+
+func TestDecryptAPIKeyBackwardCompat(t *testing.T) {
+	// 旧版明文（无前缀）应原样返回，保证已有 config.json 可读取。
+	legacy := "sk-plaintext-legacy"
+	dec, err := decryptAPIKey(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if dec != legacy {
+		t.Errorf("旧版明文应原样返回: %q", dec)
+	}
+	// 空字符串返回空。
+	if d, _ := decryptAPIKey(""); d != "" {
+		t.Errorf("空字符串应返回空: %q", d)
+	}
+}
+
+// TestSaveConfigDoesNotCorruptInMemory 回归测试：SaveConfig 必须在落盘时加密，
+// 但绝不能把内存中的明文密钥改写成密文（切片浅拷贝曾导致该 bug，使 API Key 失效、
+// 前端小眼睛显示密文）。
+func TestSaveConfigDoesNotCorruptInMemory(t *testing.T) {
+	cfg := Config{
+		Providers: []Provider{
+			{Name: "DeepSeek", BaseURL: "https://api.deepseek.com", APIKey: "sk-REAL-PLAINTEXT-KEY"},
+		},
+		ActiveProvider: "DeepSeek",
+	}
+	// 用临时文件接管 configPath，避免污染真实配置。
+	tmp := t.TempDir()
+	configFilePath = filepath.Join(tmp, "config.json")
+	defer func() { configFilePath = "" }()
+
+	if err := SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	// 内存中的明文密钥必须保持原样（未被加密）。
+	if cfg.Providers[0].APIKey != "sk-REAL-PLAINTEXT-KEY" {
+		t.Errorf("SaveConfig 不应修改内存中的明文密钥，得到: %q", cfg.Providers[0].APIKey)
+	}
+	// 落盘内容必须是密文（带 ENC: 前缀）。
+	raw, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), apiKeyEncPrefix) {
+		t.Errorf("落盘应加密存储，但 config.json 未含 %s 前缀: %s", apiKeyEncPrefix, string(raw))
+	}
+	// 重新加载应能还原明文。
+	loaded, err := LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Providers[0].APIKey != "sk-REAL-PLAINTEXT-KEY" {
+		t.Errorf("重新加载后应为明文，得到: %q", loaded.Providers[0].APIKey)
+	}
+}
+
 // ── injectThinkingParams ─────────────────────────────────────────────────────
 
 func TestInjectThinkingParams_Disabled(t *testing.T) {

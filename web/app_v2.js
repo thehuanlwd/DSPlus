@@ -218,6 +218,18 @@ function init() {
 }
 
 // ── 加载状态 ──
+function formatIntCompact(n) {
+  n = n || 0;
+  if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M';
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K';
+  return String(n);
+}
+function formatRate(r) {
+  r = r || 0;
+  if (r >= 1000) return (r / 1000).toFixed(1) + 'k/s';
+  return r.toFixed(1) + '/s';
+}
 async function loadStatus() {
   try {
     const r = await fetch('/api/status');
@@ -225,8 +237,8 @@ async function loadStatus() {
     $('statPort').textContent = s.port;
     $('statTotal').textContent = s.total;
     $('statTotalDashboard').textContent = s.total;
-    $('statToday').textContent = s.today;
-    $('emptyPort').textContent = s.port;
+    $('statToday').textContent = formatIntCompact(s.total_tokens);
+    $('emptyPort').textContent = formatRate(s.tokens_rate);
   } catch(e) {}
 }
 
@@ -417,44 +429,48 @@ function updateTokenCell(cell, e) {
   }
 }
 
-function updateRowCells(tr, e, time, semBadge, fmtBadge, streamBadge, tfBadge, scClass, scText, latencyGridHtml, latencyStr, cacheHtml, specialBadge) {
+function updateRowCells(tr, e, time, semBadge, fmtBadge, streamBadge, tfBadge, scClass, scText, latencyGridHtml, latencyStr, totalMsStr, cacheHtml, specialBadge) {
   const tds = tr.children;
-  if (tds.length >= 11) {
+  if (tds.length >= 12) {
     if (tds[0].innerHTML !== time) tds[0].innerHTML = time;
     if (tds[1].innerHTML !== semBadge) tds[1].innerHTML = semBadge;
     if (tds[2].innerHTML !== fmtBadge) tds[2].innerHTML = fmtBadge;
     if (tds[3].innerHTML !== streamBadge) tds[3].innerHTML = streamBadge;
     if (tds[4].innerHTML !== tfBadge) tds[4].innerHTML = tfBadge;
-    
+
     if (tds[5].innerHTML !== scText) {
       tds[5].innerHTML = scText;
       tds[5].className = scClass;
     }
-    
+
     const latencyContent = `${latencyGridHtml}<span class="latency">${latencyStr}</span>`;
     if (tds[6].innerHTML !== latencyContent) {
       tds[6].innerHTML = latencyContent;
     }
-    
-    updateTokenCell(tds[7], e);
-    
+
+    if (tds[7].innerHTML !== totalMsStr) {
+      tds[7].innerHTML = totalMsStr;
+    }
+
+    updateTokenCell(tds[8], e);
+
     // 缓存列替换
     const tempTable = document.createElement('table');
     tempTable.innerHTML = `<tr>${cacheHtml}</tr>`;
     const newCacheTd = tempTable.querySelector('td');
-    if (tds[8].innerHTML !== newCacheTd.innerHTML) {
-      tds[8].innerHTML = newCacheTd.innerHTML;
-      tds[8].className = newCacheTd.className;
+    if (tds[9].innerHTML !== newCacheTd.innerHTML) {
+      tds[9].innerHTML = newCacheTd.innerHTML;
+      tds[9].className = newCacheTd.className;
     }
-    
+
     const pathContent = getPathText(e);
-    if (tds[9].innerHTML !== pathContent) {
-      tds[9].innerHTML = pathContent;
+    if (tds[10].innerHTML !== pathContent) {
+      tds[10].innerHTML = pathContent;
     }
 
     // 特殊事件列：防无限思考/防幻觉/debug
-    if (tds[10].innerHTML !== specialBadge) {
-      tds[10].innerHTML = specialBadge;
+    if (tds[11].innerHTML !== specialBadge) {
+      tds[11].innerHTML = specialBadge;
     }
   }
 }
@@ -482,7 +498,7 @@ function renderLogs() {
     } else {
       $('logTable').style.display = '';
       $('emptyState').style.display = 'none';
-      body.innerHTML = '<tr><td colspan="11" style="text-align:center;color:var(--yorha-fg-dim);padding:20px">' + (t('common.no_match') || '无匹配记录') + '</td></tr>';
+      body.innerHTML = '<tr><td colspan="12" style="text-align:center;color:var(--yorha-fg-dim);padding:20px">' + (t('common.no_match') || '无匹配记录') + '</td></tr>';
     }
     if (typeof applyI18n === 'function') applyI18n();
     return;
@@ -509,13 +525,14 @@ function renderLogs() {
     const scText = e.status_code === 0 ? 'PENDING' : e.status_code;
     const isPending = e.status_code === 0 || e.latency_ms === 0;
     const latencyStr = isPending ? '--' : (e.latency_ms >= 1000 ? (e.latency_ms/1000).toFixed(1)+'s' : e.latency_ms+'ms');
+    const totalMsStr = (!e.total_ms || e.total_ms === 0) ? '--' : (e.total_ms >= 1000 ? (e.total_ms/1000).toFixed(1)+'s' : e.total_ms+'ms');
 
     const cacheHtml = getCacheHtml(e);
     const latencyGridHtml = getLatencyGridHtml(e);
 
     let tr = existingRows[e.id];
     if (tr) {
-      updateRowCells(tr, e, time, semBadge, fmtBadge, streamBadge, tfBadge, scClass, scText, latencyGridHtml, latencyStr, cacheHtml, specialBadge);
+      updateRowCells(tr, e, time, semBadge, fmtBadge, streamBadge, tfBadge, scClass, scText, latencyGridHtml, latencyStr, totalMsStr, cacheHtml, specialBadge);
     } else {
       tr = document.createElement('tr');
       tr.dataset.id = e.id;
@@ -529,9 +546,10 @@ function renderLogs() {
         <td>${tfBadge}</td>
         <td class="${scClass}">${scText}</td>
         <td>${latencyGridHtml}<span class="latency">${latencyStr}</span></td>
+        <td class="total-td" style="color:var(--yorha-fg-dim)">${totalMsStr}</td>
         <td class="tokens-td"></td>
         ${cacheHtml}
-        <td style="color:var(--yorha-fg-dim)">${getPathText(e)}</td>
+        <td class="endpoint-cell" style="color:var(--yorha-fg-dim)">${getPathText(e)}</td>
         <td>${specialBadge}</td>
       `;
       updateTokenCell(tr.querySelector('.tokens-td'), e);
@@ -915,11 +933,9 @@ async function loadSettings() {
   try {
     const r = await fetch('/api/config');
     const cfg = await r.json();
-    $('cfgAPIKey').value = cfg.api_key || '';
     $('cfgPort').value = cfg.port || 8188;
     $('cfgLanAccess').checked = cfg.lan_access || false;
-    $('cfgOpenAIUpstream').value = cfg.openai_upstream || 'https://api.deepseek.com';
-    $('cfgAnthropicUpstream').value = cfg.anthropic_upstream || 'https://api.deepseek.com/anthropic';
+    renderProviders(cfg.providers || [], cfg.active_provider || '');
     $('cfgVerbose').checked = cfg.verbose_logging || false;
     $('cfgThinkingMode').value = cfg.thinking_mode || '';
     $('cfgReasoningEffort').value = cfg.reasoning_effort || 'high';
@@ -968,14 +984,144 @@ async function loadSettings() {
   }
 }
 
+// ── 供应商（多上游）管理 ──
+let providersData = [];
+let activeProviderIndex = 0;
+
+function renderProviders(providers, active) {
+  providersData = (providers || []).map(p => ({
+    Name: p.name || '',
+    BaseURL: p.base_url || '',
+    AnthropicBaseURL: p.anthropic_base_url || '',
+    APIKey: p.api_key || '',
+  }));
+  if (providersData.length === 0) {
+    providersData = [{ Name: 'DeepSeek', BaseURL: 'https://api.deepseek.com', APIKey: '' }];
+  }
+  activeProviderIndex = 0;
+  const ai = providersData.findIndex(p => p.Name === active);
+  if (ai >= 0) activeProviderIndex = ai;
+  populateProviderSelect();
+  fillProviderEditor();
+}
+
+function populateProviderSelect() {
+  const sel = $('cfgActiveProvider');
+  sel.innerHTML = '';
+  providersData.forEach((p, i) => {
+    const opt = document.createElement('option');
+    opt.value = String(i);
+    opt.textContent = p.Name || ('(未命名 ' + i + ')');
+    sel.appendChild(opt);
+  });
+  sel.value = String(activeProviderIndex);
+  refreshProviderDropdown();
+}
+
+// 若供应商下拉已被转为自定义组件，则按当前 option 重建触发文字与选项列表
+function refreshProviderDropdown() {
+  const sel = $('cfgActiveProvider');
+  if (!sel) return;
+  const wrapper = sel.parentElement;
+  if (!wrapper || !wrapper.classList.contains('yorha-select-wrapper')) return;
+  const trigger = wrapper.querySelector('.yorha-select-trigger');
+  const optionsContainer = wrapper.querySelector('.yorha-select-options');
+  if (!trigger || !optionsContainer) return;
+
+  const selectedOption = sel.options[sel.selectedIndex];
+  trigger.textContent = selectedOption ? selectedOption.textContent : '';
+
+  optionsContainer.innerHTML = '';
+  Array.from(sel.options).forEach((opt, idx) => {
+    const item = document.createElement('div');
+    item.className = 'yorha-select-option-item';
+    if (idx === sel.selectedIndex) item.classList.add('selected');
+    item.textContent = opt.textContent;
+    item.addEventListener('click', (e) => {
+      e.stopPropagation();
+      sel.selectedIndex = idx;
+      trigger.textContent = opt.textContent;
+      Array.from(optionsContainer.children).forEach((c, i) => {
+        if (i === idx) c.classList.add('selected');
+        else c.classList.remove('selected');
+      });
+      wrapper.classList.remove('open');
+      sel.dispatchEvent(new Event('change'));
+    });
+    optionsContainer.appendChild(item);
+  });
+}
+
+function fillProviderEditor() {
+  const p = providersData[activeProviderIndex];
+  if (!p) return;
+  $('cfgProviderName').value = p.Name || '';
+  $('cfgProviderBase').value = p.BaseURL || '';
+  $('cfgProviderAnthropicBase').value = p.AnthropicBaseURL || '';
+  $('cfgProviderKey').value = p.APIKey || '';
+}
+
+function syncProviderFromEditor() {
+  const p = providersData[activeProviderIndex];
+  if (!p) return;
+  const oldName = p.Name;
+  p.Name = $('cfgProviderName').value;
+  p.BaseURL = $('cfgProviderBase').value;
+  p.AnthropicBaseURL = $('cfgProviderAnthropicBase').value;
+  p.APIKey = $('cfgProviderKey').value;
+  if (oldName !== p.Name) {
+    const opt = $('cfgActiveProvider').querySelector('option[value="' + activeProviderIndex + '"]');
+    if (opt) opt.textContent = p.Name || ('(未命名 ' + activeProviderIndex + ')');
+    refreshProviderDropdown();
+  }
+}
+
+function onActiveProviderChange() {
+  syncProviderFromEditor(); // 先保存当前正在编辑的供应商
+  activeProviderIndex = parseInt($('cfgActiveProvider').value) || 0;
+  fillProviderEditor();
+}
+
+function addProvider() {
+  syncProviderFromEditor();
+  providersData.push({ Name: '新供应商', BaseURL: '', AnthropicBaseURL: '', APIKey: '' });
+  activeProviderIndex = providersData.length - 1;
+  populateProviderSelect();
+  fillProviderEditor();
+}
+
+function deleteProvider() {
+  syncProviderFromEditor();
+  if (providersData.length <= 1) {
+    triggerAlert(t('settings.provider_delete_last') || '至少保留一个供应商');
+    return;
+  }
+  providersData.splice(activeProviderIndex, 1);
+  if (activeProviderIndex >= providersData.length) activeProviderIndex = providersData.length - 1;
+  populateProviderSelect();
+  fillProviderEditor();
+}
+
+function toggleProviderKeyVisibility() {
+  const input = $('cfgProviderKey');
+  const btn = input.parentElement.querySelector('.yorha-eye-btn');
+  if (!input || !btn) return;
+  if (input.type === 'password') {
+    input.type = 'text';
+    btn.classList.add('visible');
+  } else {
+    input.type = 'password';
+    btn.classList.remove('visible');
+  }
+}
+
 // ── 保存配置 ──
 async function saveSettings() {
   const payload = {
-    api_key: $('cfgAPIKey').value,
     port: parseInt($('cfgPort').value) || 8188,
     lan_access: $('cfgLanAccess').checked,
-    openai_upstream: $('cfgOpenAIUpstream').value,
-    anthropic_upstream: $('cfgAnthropicUpstream').value,
+    providers: providersData.map(p => ({ name: p.Name, base_url: p.BaseURL, anthropic_base_url: p.AnthropicBaseURL, api_key: p.APIKey })),
+    active_provider: providersData[activeProviderIndex] ? providersData[activeProviderIndex].Name : '',
     verbose_logging: $('cfgVerbose').checked,
     thinking_mode: $('cfgThinkingMode').value,
     reasoning_effort: $('cfgReasoningEffort').value,
@@ -1057,11 +1203,9 @@ async function clearAnalysisHistory() {
 
 // ── 恢复默认 ──
 function resetSettings() {
-  $('cfgAPIKey').value = '';
+  renderProviders([{ name: 'DeepSeek', base_url: 'https://api.deepseek.com', anthropic_base_url: '', api_key: '' }], 'DeepSeek');
   $('cfgPort').value = 8188;
   $('cfgLanAccess').checked = false;
-  $('cfgOpenAIUpstream').value = 'https://api.deepseek.com';
-  $('cfgAnthropicUpstream').value = 'https://api.deepseek.com/anthropic';
   $('cfgVerbose').checked = false;
   $('cfgThinkingMode').value = '';
   $('cfgReasoningEffort').value = 'high';
@@ -2233,12 +2377,15 @@ function convertSelectsToYorha() {
     });
   });
 
-  // 全局点击关闭所有下拉框
-  document.addEventListener('click', () => {
-    document.querySelectorAll('.yorha-select-wrapper').forEach(w => {
-      w.classList.remove('open');
+  // 全局点击关闭所有下拉框（只绑定一次）
+  if (!window.__yorhaClickBound) {
+    document.addEventListener('click', () => {
+      document.querySelectorAll('.yorha-select-wrapper').forEach(w => {
+        w.classList.remove('open');
+      });
     });
-  });
+    window.__yorhaClickBound = true;
+  }
 }
 
 // ── DOM 就绪时初始化 ──

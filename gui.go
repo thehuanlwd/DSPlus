@@ -118,10 +118,15 @@ func handleAPIStatus(w http.ResponseWriter, r *http.Request, l *Logger, cfg *Saf
 		reasons = append(reasons, "局域网/WSL 访问")
 	}
 
+	// 平均 token 速率 = 首页列表内每个请求单独计算的 (输出tokens(含思考) / (总耗时-首响)) 的算术平均
+	tokensRate := l.AvgOutputTokensPerSec()
+
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"port":             c.Port,
 		"total":            stats["total"],
 		"today":            stats["today"],
+		"total_tokens":     stats["total_tokens"],
+		"tokens_rate":      tokensRate,
 		"max_logs":         l.maxSize,
 		"restart_required": restartRequired,
 		"restart_reasons":  reasons,
@@ -171,7 +176,8 @@ func handleAPILogDetail(w http.ResponseWriter, r *http.Request, l *Logger, path 
 
 func handleAPIGetConfig(w http.ResponseWriter, r *http.Request, cfg *SafeConfig) {
 	cfgCopy := cfg.Get()
-	cfgCopy.APIKey = maskAPIKey(cfgCopy.APIKey)
+	// 返回解密后的真实密钥，交由前端的密码框隐藏；小眼睛可临时显示。
+	// 落盘时再由 SaveConfig 加密，config.json 中不会以明文存储。
 	json.NewEncoder(w).Encode(cfgCopy)
 }
 
@@ -188,10 +194,62 @@ func handleAPISaveConfig(w http.ResponseWriter, r *http.Request, cfg *SafeConfig
 	changed := false
 
 	cfg.Update(func(c *Config) {
-		// API key: special handling for masked value comparison.
+		// API key: 忽略“未修改”的情况（当前真实密钥或掩码形式都视为无变化）。
 		if v, ok := updates["api_key"]; ok {
-			if s, ok := v.(string); ok && s != "" && s != maskAPIKey(c.APIKey) {
+			if s, ok := v.(string); ok && s != "" && s != c.APIKey && s != maskAPIKey(c.APIKey) {
+				// 防御：若前端回传的是已加密值（旧实例未重启的过渡窗口），先还原明文，避免二次加密。
+				if strings.HasPrefix(s, apiKeyEncPrefix) {
+					if dec, err := decryptAPIKey(s); err == nil {
+						s = dec
+					}
+				}
 				c.APIKey = s
+				changed = true
+			}
+		}
+
+		// 供应商列表：前端整体提交，后端整体替换。
+		if v, ok := updates["providers"]; ok {
+			if arr, ok := v.([]interface{}); ok && len(arr) > 0 {
+				var provs []Provider
+				for _, item := range arr {
+					m, ok := item.(map[string]interface{})
+					if !ok {
+						continue
+					}
+					p := Provider{}
+					if n, ok := m["name"].(string); ok {
+						p.Name = n
+					}
+				if b, ok := m["base_url"].(string); ok {
+					p.BaseURL = strings.TrimRight(b, "/")
+				}
+				if ab, ok := m["anthropic_base_url"].(string); ok {
+					p.AnthropicBaseURL = strings.TrimRight(ab, "/")
+				}
+				if k, ok := m["api_key"].(string); ok {
+					// 防御：若前端回传的是已加密值（旧实例未重启的过渡窗口），先还原明文，避免二次加密。
+					if strings.HasPrefix(k, apiKeyEncPrefix) {
+						if dec, err := decryptAPIKey(k); err == nil {
+							k = dec
+						}
+					}
+					p.APIKey = k
+				}
+					if p.Name == "" {
+						p.Name = "未命名供应商"
+					}
+					provs = append(provs, p)
+				}
+				if len(provs) > 0 {
+					c.Providers = provs
+					changed = true
+				}
+			}
+		}
+		if v, ok := updates["active_provider"]; ok {
+			if s, ok := v.(string); ok && s != "" && c.ActiveProvider != s {
+				c.ActiveProvider = s
 				changed = true
 			}
 		}

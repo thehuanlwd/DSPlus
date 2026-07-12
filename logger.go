@@ -16,6 +16,28 @@ type TokenUsage struct {
 	CacheMiss  int64 `json:"cache_miss"`
 }
 
+// RequestAudit 记录单次代理请求「设置页面意图配置」与「重组后请求体实际生效」
+// 的对照，供自检脚本核对两者是否一致。Cfg* 为请求时刻的配置快照，Actual* 为
+// 解析重组后请求体得到的真实生效值。
+type RequestAudit struct {
+	Time time.Time `json:"time"`
+	Format string  `json:"format"`
+	// 意图配置（请求时刻的设置页面快照）
+	CfgSystemPromptPlacement string `json:"cfg_system_prompt_placement"`
+	CfgExtraPromptPlacement  string `json:"cfg_extra_prompt_placement"`
+	CfgExtraPromptEmpty      bool   `json:"cfg_extra_prompt_empty"`
+	CfgThinkingMode          string `json:"cfg_thinking_mode"`
+	CfgReasoningEffort       string `json:"cfg_reasoning_effort"`
+	CfgMaxTokensMode         string `json:"cfg_max_tokens_mode"`
+	// 实际生效（解析重组后的请求体得到）
+	ActualHasStandaloneSystem    bool   `json:"actual_has_standalone_system"`
+	ActualHasSystemPromptTag     bool   `json:"actual_has_system_prompt_tag"`
+	ActualHasSupremeInstruction  bool   `json:"actual_has_supreme_instruction"`
+	ActualThinkingType           string `json:"actual_thinking_type"`
+	ActualReasoningEffort        string `json:"actual_reasoning_effort"`
+	ActualMaxTokens              int    `json:"actual_max_tokens"`
+}
+
 type LogEntry struct {
 	ID               int64             `json:"id"`
 	Time             time.Time         `json:"time"`
@@ -25,6 +47,8 @@ type LogEntry struct {
 	Path             string            `json:"path"`
 	StatusCode       int               `json:"status_code"`
 	LatencyMs        int64             `json:"latency_ms"`
+	TotalMs          int64             `json:"total_ms"` // 整轮完成耗时（含流式生成），用于首页“总耗时”列
+	TokensPerSec     float64           `json:"tokens_per_sec"` // 单请求输出 token 速率 = 输出tokens(含思考) / (总耗时-首响)，单位 token/秒
 	Stream           bool              `json:"stream"`
 	Transformed      bool              `json:"transformed"`
 	HasSystemPrompt  bool              `json:"has_system_prompt"`
@@ -36,6 +60,7 @@ type LogEntry struct {
 	ResponseBody     string            `json:"response_body,omitempty"`
 	TokenUsage       *TokenUsage       `json:"token_usage,omitempty"`
 	Status           string            `json:"status,omitempty"`
+	RequestAudit     *RequestAudit     `json:"request_audit,omitempty"`
 }
 
 type Logger struct {
@@ -104,6 +129,7 @@ func (l *Logger) UpdateTokenUsageAndStatus(id int64, usage *TokenUsage, status s
 			if status != "" {
 				l.entries[i].Status = status
 			}
+			l.recomputeRate(i)
 			// broadcast updated entry so frontend gets token stats without refresh
 			select {
 			case l.subscriber <- l.entries[i]:
@@ -116,7 +142,7 @@ func (l *Logger) UpdateTokenUsageAndStatus(id int64, usage *TokenUsage, status s
 	l.mu.Unlock()
 }
 
-func (l *Logger) UpdateOnResponse(id int64, statusCode int, latencyMs int64, status string, headers map[string]string, originalBody, transformedBody string) {
+func (l *Logger) UpdateOnResponse(id int64, statusCode int, 		latencyMs int64, status string, headers map[string]string, originalBody, transformedBody string) {
 	l.mu.Lock()
 	var matchedEntry *LogEntry
 	for i := len(l.entries) - 1; i >= 0; i-- {
@@ -135,6 +161,7 @@ func (l *Logger) UpdateOnResponse(id int64, statusCode int, latencyMs int64, sta
 			if transformedBody != "" {
 				l.entries[i].TransformedBody = transformedBody
 			}
+			l.recomputeRate(i)
 			select {
 			case l.subscriber <- l.entries[i]:
 			default:
@@ -148,6 +175,58 @@ func (l *Logger) UpdateOnResponse(id int64, statusCode int, latencyMs int64, sta
 	if matchedEntry != nil && matchedEntry.Status == "completed" && (matchedEntry.StatusCode >= 400 || matchedEntry.ResponseBody == "") {
 		l.writeDebugLog(*matchedEntry)
 	}
+}
+
+// UpdateTotalMs 在请求/流完全结束后回填整轮完成耗时（total_ms），
+// 与首字节延迟（latency_ms）区分：latency_ms 测到首字节，total_ms 测到整轮完成。
+func (l *Logger) UpdateTotalMs(id int64, totalMs int64) {
+	l.mu.Lock()
+	for i := len(l.entries) - 1; i >= 0; i-- {
+		if l.entries[i].ID == id {
+			l.entries[i].TotalMs = totalMs
+			l.recomputeRate(i)
+			// 广播更新，使前端实时拿到整轮耗时
+			select {
+			case l.subscriber <- l.entries[i]:
+			default:
+			}
+			break
+		}
+	}
+	l.mu.Unlock()
+}
+
+// recomputeRate 依据「输出 tokens（含思考）/（总耗时 - 首响）」回填单请求 token 速率（token/秒）。
+// 当 TotalMs 或 TokenUsage 尚未齐备、或分母非正时直接跳过，待下一次更新补齐。
+func (l *Logger) recomputeRate(i int) {
+	e := &l.entries[i]
+	if e.TokenUsage == nil || e.TokenUsage.Completion <= 0 {
+		return
+	}
+	denomMs := e.TotalMs - e.LatencyMs // 总耗时 - 首响 = 生成阶段耗时
+	if denomMs <= 0 {
+		return
+	}
+	e.TokensPerSec = float64(e.TokenUsage.Completion) / (float64(denomMs) / 1000.0)
+}
+
+// AvgOutputTokensPerSec 返回首页列表内各请求 token 速率的算术平均（token/秒），
+// 即每个请求单独算 (输出tokens(含思考) / (总耗时-首响))，再对列表内所有可计算请求取平均。
+func (l *Logger) AvgOutputTokensPerSec() float64 {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	var sum float64
+	var count int
+	for _, e := range l.entries {
+		if e.TokensPerSec > 0 {
+			sum += e.TokensPerSec
+			count++
+		}
+	}
+	if count == 0 {
+		return 0
+	}
+	return sum / float64(count)
 }
 
 func (l *Logger) UpdateSemanticType(id int64, semanticType string) {
@@ -258,6 +337,7 @@ func (l *Logger) Stats() map[string]int {
 
 	total := len(l.entries)
 	today := 0
+	totalTokens := 0
 	now := time.Now()
 	todayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
 
@@ -265,11 +345,15 @@ func (l *Logger) Stats() map[string]int {
 		if e.Time.After(todayStart) {
 			today++
 		}
+		if e.TokenUsage != nil {
+			totalTokens += int(e.TokenUsage.Total)
+		}
 	}
 
 	return map[string]int{
-		"total": total,
-		"today": today,
+		"total":       total,
+		"today":       today,
+		"total_tokens": totalTokens,
 	}
 }
 
@@ -280,6 +364,25 @@ func (l *Logger) writeDebugLog(e LogEntry) {
 	}
 	_ = os.MkdirAll("test", 0755)
 	f, err := os.OpenFile("test/proxy_debug_logs.jsonl", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.Write(append(b, '\n'))
+}
+
+// WriteAudit 将单次请求的配置意图/实际生效对照追加到 audit JSONL，
+// 供独立的自检脚本读取「最近一次」请求并核对一致性。
+func (l *Logger) WriteAudit(a *RequestAudit) {
+	if a == nil {
+		return
+	}
+	b, err := json.Marshal(a)
+	if err != nil {
+		return
+	}
+	_ = os.MkdirAll("test", 0755)
+	f, err := os.OpenFile("test/request_audit.jsonl", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return
 	}

@@ -76,9 +76,9 @@
           <div class="figure-desc">DSPlus listen state</div>
         </figure>
         <figure>
-          <figcaption data-i18n="dashboard.listen_port">LISTEN PORT</figcaption>
+          <figcaption data-i18n="dashboard.tokens_rate">TOKENS/SEC</figcaption>
           <div class="figure-val" id="emptyPort">--</div>
-          <div class="figure-desc" data-i18n="dashboard.listen_port">gateway listen port</div>
+          <div class="figure-desc" data-i18n="dashboard.tokens_rate_desc">avg tokens per second</div>
         </figure>
         <figure>
           <figcaption data-i18n="dashboard.total_requests">TOTAL REQUESTS</figcaption>
@@ -86,9 +86,9 @@
           <div class="figure-desc" data-i18n="dashboard.total_requests">total mutated packets</div>
         </figure>
         <figure>
-          <figcaption data-i18n="dashboard.daily_traffic">DAILY TRAFFIC</figcaption>
+          <figcaption data-i18n="dashboard.total_tokens">TOTAL TOKENS</figcaption>
           <div class="figure-val" id="statToday">0</div>
-          <div class="figure-desc" data-i18n="dashboard.daily_traffic">mutations today</div>
+          <div class="figure-desc" data-i18n="dashboard.total_tokens_desc">homepage cumulative tokens</div>
         </figure>
       </div>
 
@@ -119,13 +119,14 @@
         <table class="yorha-table" id="logTable" style="display:none">
           <thead>
             <tr>
-              <th style="width: 110px" data-i18n="log.time">时间</th>
-              <th style="width: 100px" data-i18n="log.behavior">行为</th>
-              <th style="width: 110px" data-i18n="log.format">格式</th>
-              <th style="width: 60px" data-i18n="log.stream">流式</th>
-              <th style="width: 70px" data-i18n="log.recombined">重组</th>
+              <th style="width: 92px" data-i18n="log.time">时间</th>
+              <th style="width: 72px" data-i18n="log.behavior">行为</th>
+              <th style="width: 84px" data-i18n="log.format">格式</th>
+              <th style="width: 52px" data-i18n="log.stream">流式</th>
+              <th style="width: 56px" data-i18n="log.recombined">重组</th>
               <th style="width: 70px" data-i18n="log.status">状态</th>
-              <th style="width: 140px" data-i18n="log.latency">延迟</th>
+              <th style="width: 124px" data-i18n="log.latency">延迟</th>
+              <th style="width: 96px" data-i18n="log.total_time">总耗时</th>
               <th style="width: 90px" data-i18n="log.tokens">Tokens</th>
               <th style="width: 80px" data-i18n="log.cache">缓存</th>
               <th data-i18n="log.endpoint">API 端点</th>
@@ -288,41 +289,54 @@
           <div class="config-card">
             <h2 data-i18n="settings.basic_title">基础与代理配置</h2>
 
+            <!-- 当前供应商选择 -->
             <div class="config-row">
-              <label data-i18n="settings.api_key">DeepSeek API Key</label>
-              <input type="password" id="cfgAPIKey" placeholder="sk-...">
-              <div class="hint">API Key 仅存储在本地 config.json 中</div>
-            </div>
-
-            <div class="config-row">
-              <label data-i18n="settings.port">监听端口</label>
-              <div class="yorha-number-stepper">
-                <button type="button" class="stepper-btn" onclick="stepValue('cfgPort', -1, 1, 65535)">-</button>
-                <input type="number" id="cfgPort" min="1" max="65535" value="8188">
-                <button type="button" class="stepper-btn" onclick="stepValue('cfgPort', 1, 1, 65535)">+</button>
+              <label data-i18n="settings.active_provider">当前供应商</label>
+              <div class="provider-select-row">
+                <select id="cfgActiveProvider" onchange="onActiveProviderChange()"></select>
+                <button type="button" class="button" onclick="addProvider()" data-i18n="settings.provider_add">新增</button>
+                <button type="button" class="button button-accent" onclick="deleteProvider()" data-i18n="settings.provider_delete">删除</button>
               </div>
-              <div class="hint" data-i18n="settings.port_hint">修改端口后需要重启服务生效</div>
+  </div>
+
+            <!-- 当前供应商编辑区 -->
+            <div id="providerEditor">
+              <div class="config-row">
+                <label data-i18n="settings.provider_name">供应商名称</label>
+                <input type="text" id="cfgProviderName" placeholder="DeepSeek" oninput="syncProviderFromEditor()">
+              </div>
+
+              <div class="config-row">
+                <label data-i18n="settings.provider_base">基础地址 (Base URL)</label>
+                <input type="text" id="cfgProviderBase" placeholder="https://api.deepseek.com" oninput="syncProviderFromEditor()">
+              </div>
+
+              <div class="config-row">
+                <label data-i18n="settings.provider_anthropic_base">Anthropic 专用地址（可选）</label>
+                <input type="text" id="cfgProviderAnthropicBase" placeholder="https://api.deepseek.com/anthropic" oninput="syncProviderFromEditor()">
+              </div>
+
+              <div class="config-row">
+                <label data-i18n="settings.provider_key">API Key</label>
+                <div class="yorha-password-input">
+                  <input type="password" id="cfgProviderKey" placeholder="sk-..." oninput="syncProviderFromEditor()">
+                  <button type="button" class="yorha-eye-btn" onclick="toggleProviderKeyVisibility()"
+                    data-i18n-title="settings.api_key_toggle" aria-label="显示/隐藏 API Key">
+                    <svg class="eye-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                      stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"></path>
+                      <circle cx="12" cy="12" r="3"></circle>
+                    </svg>
+                    <svg class="eye-closed" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                      stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"></path>
+                      <line x1="1" y1="1" x2="23" y2="23"></line>
+                    </svg>
+                  </button>
+                </div>
+              </div>
             </div>
 
-            <div class="config-row">
-              <label data-i18n="settings.openai_upstream">OpenAI 上游地址</label>
-              <input type="text" id="cfgOpenAIUpstream" value="https://api.deepseek.com">
-            </div>
-
-            <div class="config-row">
-              <label data-i18n="settings.anthropic_upstream">Anthropic 上游地址</label>
-              <input type="text" id="cfgAnthropicUpstream" value="https://api.deepseek.com/anthropic">
-            </div>
-
-            <!-- 语言选项：放在原 GUI 开关位置 -->
-            <div class="config-row">
-              <label data-i18n="settings.language">界面语言</label>
-              <select id="cfgLanguage">
-                <option value="zh" data-i18n="settings.lang_zh">中文</option>
-                <option value="en" data-i18n="settings.lang_en">English</option>
-              </select>
-              <div class="hint" data-i18n="settings.language_hint">初次启动按系统自动选择；切换后立即生效</div>
-            </div>
           </div>
 
           <!-- 板块 2: 规则设置 -->
@@ -354,6 +368,8 @@
                 <option value="" data-i18n="settings.max_tokens.none">不修改</option>
                 <option value="5000">5000</option>
                 <option value="32000">32000</option>
+                <option value="384000">384000</option>
+                <option value="off" data-i18n="settings.max_tokens.off">不发送（删除参数）</option>
                 <option value="custom" data-i18n="settings.max_tokens.custom">自定义</option>
               </select>
               <div class="hint" data-i18n="settings.max_tokens_hint">限制模型最大输出 Token 数，防止陷入思考死循环</div>
@@ -363,10 +379,10 @@
               <label data-i18n="settings.max_tokens_custom">自定义 Max Tokens 值</label>
               <div class="yorha-number-stepper">
                 <button type="button" class="stepper-btn"
-                  onclick="stepValue('cfgMaxTokensCustom', -500, 1, 100000)">-</button>
-                <input type="number" id="cfgMaxTokensCustom" min="1" max="100000" value="8000">
+                  onclick="stepValue('cfgMaxTokensCustom', -500, 1, 384000)">-</button>
+                <input type="number" id="cfgMaxTokensCustom" min="1" max="384000" value="8000">
                 <button type="button" class="stepper-btn"
-                  onclick="stepValue('cfgMaxTokensCustom', 500, 1, 100000)">+</button>
+                  onclick="stepValue('cfgMaxTokensCustom', 500, 1, 384000)">+</button>
               </div>
             </div>
 
@@ -400,6 +416,16 @@
           <!-- 板块 3: 高级设置 -->
           <div class="config-card">
             <h2 data-i18n="settings.advanced_title">高级设置</h2>
+
+            <div class="config-row">
+              <label data-i18n="settings.port">监听端口</label>
+              <div class="yorha-number-stepper">
+                <button type="button" class="stepper-btn" onclick="stepValue('cfgPort', -1, 1, 65535)">-</button>
+                <input type="number" id="cfgPort" min="1" max="65535" value="8188">
+                <button type="button" class="stepper-btn" onclick="stepValue('cfgPort', 1, 1, 65535)">+</button>
+              </div>
+              <div class="hint" data-i18n="settings.port_hint">客户端通过 http://localhost:端口 连接本代理；修改端口后需重启服务生效</div>
+            </div>
 
             <div class="toggle-container">
               <div class="toggle-info">
@@ -571,6 +597,16 @@
                 <option value="classic" data-i18n="settings.theme.classic">Classic (GitHub 深色风格)</option>
               </select>
               <div class="hint" data-i18n="settings.theme_hint">切换控制台的主题外观，实时生效并保存在本地</div>
+            </div>
+
+            <!-- 语言选项：放在系统设置的最后（主题选择之后） -->
+            <div class="config-row" style="margin-top: 1rem;">
+              <label data-i18n="settings.language">界面语言</label>
+              <select id="cfgLanguage">
+                <option value="zh" data-i18n="settings.lang_zh">中文</option>
+                <option value="en" data-i18n="settings.lang_en">English</option>
+              </select>
+              <div class="hint" data-i18n="settings.language_hint">初次启动按系统自动选择；切换后立即生效</div>
             </div>
           </div>
 

@@ -401,20 +401,23 @@ func (s *ProxyServer) streamHardLimitSSE(w http.ResponseWriter, flusher http.Flu
 // executeRetryCall makes the retry HTTP request and returns the response for streaming.
 // Caller is responsible for closing resp.Body.
 func (s *ProxyServer) executeRetryCall(body []byte, format string) (*http.Response, error) {
-	cfg := s.config.Get()
-	upstream := cfg.OpenAIUpstream
+	prov, _ := s.activeProvider()
+	upstream := s.resolveBaseURL(prov, format)
 	path := "/chat/completions"
 	if format == "anthropic" {
-		upstream = cfg.AnthropicUpstream
 		path = "/v1/messages"
 	}
 
-	req, err := http.NewRequest("POST", upstream+path, bytes.NewReader(body))
+	req, err := http.NewRequest("POST", joinUpstream(upstream, path), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+	key := s.activeAPIKey()
+	req.Header.Set("Authorization", "Bearer "+key)
+	if format == "anthropic" {
+		req.Header.Set("x-api-key", key)
+	}
 
 	return s.client.Do(req)
 }
@@ -459,15 +462,16 @@ func (s *ProxyServer) callAntiLoopAnalyzerPartial(
 func (s *ProxyServer) callAntiLoopAnalyzerWith(analysisBody []byte, pathLabel string) (*AntiLoopAnalysis, error) {
 	startTime := time.Now()
 	cfg := s.config.Get()
+	prov, _ := s.activeProvider()
 
-	upstreamURL := cfg.OpenAIUpstream + "/chat/completions"
+	upstreamURL := joinUpstream(prov.BaseURL, "/chat/completions")
 
 	req, err := http.NewRequest("POST", upstreamURL, bytes.NewReader(analysisBody))
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+	req.Header.Set("Authorization", "Bearer "+s.activeAPIKey())
 
 	client := &http.Client{Timeout: analyzerTimeout}
 	resp, err := client.Do(req)
@@ -571,7 +575,7 @@ func (s *ProxyServer) callAntiLoopAnalyzerWith(analysisBody []byte, pathLabel st
 		resp.StatusCode,
 		time.Since(startTime).Milliseconds(),
 		"deepseek-chat",
-		cfg.OpenAIUpstream,
+		s.activeBaseURL(),
 		buildRequestMeta(analyzerBody, "openai", false, false),
 		ResponseMeta{
 			AnalyzerJudgment: analysis.Judgment,
@@ -820,21 +824,25 @@ func (s *ProxyServer) buildSimpleRetryRequest(transformedBody []byte, format str
 func (s *ProxyServer) executeRetry(body []byte, format string) (responseBody []byte, finishReason string) {
 	startTime := time.Now()
 	cfg := s.config.Get()
+	prov, _ := s.activeProvider()
 
-	upstream := cfg.OpenAIUpstream
+	upstream := s.resolveBaseURL(prov, format)
 	path := "/chat/completions"
 	if format == "anthropic" {
-		upstream = cfg.AnthropicUpstream
 		path = "/v1/messages"
 	}
 
-	req, err := http.NewRequest("POST", upstream+path, bytes.NewReader(body))
+	req, err := http.NewRequest("POST", joinUpstream(upstream, path), bytes.NewReader(body))
 	if err != nil {
 		log.Printf("[antiloop] retry request error: %v", err)
 		return hardLimitMessages(format), "stop"
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+	key := s.activeAPIKey()
+	req.Header.Set("Authorization", "Bearer "+key)
+	if format == "anthropic" {
+		req.Header.Set("x-api-key", key)
+	}
 
 	resp, err := s.client.Do(req)
 	if err != nil {

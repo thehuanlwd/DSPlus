@@ -39,7 +39,9 @@ type TraceEvent struct {
 	Format          string        `json:"format"`
 	Route           string        `json:"route"`
 	Status          int           `json:"status"`
-	LatencyMs       int64         `json:"latency_ms"`
+	LatencyMs       int64         `json:"latency_ms"`    // 整轮完成耗时（首字节 → 流结束），历史字段，与新加的 total_ms 同源
+	FirstByteMs     int64         `json:"first_byte_ms"` // 首响：请求进入 → 上游首字节（TTFT），与首页 latency_ms 一致
+	TotalMs         int64         `json:"total_ms"`      // 总耗时：请求进入 → 整轮完成，与首页 total_ms 列一致
 	Model           string        `json:"model"`
 	Upstream        string        `json:"upstream"`
 	Request         RequestMeta   `json:"request"`
@@ -161,6 +163,7 @@ type TimelinePage struct {
 // AnalysisService 核心分析服务
 type AnalysisService struct {
 	config         *SafeConfig
+	logger         *Logger
 	lock           sync.RWMutex
 	sessions       map[string]*ConversationSession
 	eventChan      chan *TraceEvent
@@ -176,13 +179,14 @@ var (
 )
 
 // InitAnalysisService 初始化全局分析服务
-func InitAnalysisService(cfg *SafeConfig) *AnalysisService {
+func InitAnalysisService(cfg *SafeConfig, logger *Logger) *AnalysisService {
 	analysisOnce.Do(func() {
 		exe, _ := os.Executable()
 		logDir := filepath.Join(filepath.Dir(exe), "analysis_logs")
 
 		globalAnalysisService = &AnalysisService{
 			config:         cfg,
+			logger:         logger,
 			sessions:       make(map[string]*ConversationSession),
 			eventChan:      make(chan *TraceEvent, 2000), // 异步事件缓冲区
 			logDir:         logDir,
@@ -252,6 +256,14 @@ func (s *AnalysisService) runWorker() {
 func (s *AnalysisService) processEvent(ev *TraceEvent) {
 	s.lock.Lock()
 	defer s.lock.Unlock()
+
+	// 回填首响/总耗时，与首页 latency_ms / total_ms 对齐
+	if s.logger != nil {
+		if entry := s.logger.Get(ev.LogID); entry != nil {
+			ev.FirstByteMs = entry.LatencyMs
+			ev.TotalMs = entry.TotalMs
+		}
+	}
 
 	// 1. 进行 Session 归拢与推导
 	s.inferSession(ev)

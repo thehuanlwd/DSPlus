@@ -461,6 +461,8 @@ func main() {
                 <option value="">不修改</option>
                 <option value="5000">5000</option>
                 <option value="32000">32000</option>
+                <option value="384000">384000</option>
+                <option value="off">不发送（删除参数）</option>
                 <option value="custom">自定义</option>
               </select>
               <div style="font-size: 0.7rem; color: #747266; margin-top: 0.3rem;">限制模型最大输出 Token 数，防止陷入思考死循环</div>
@@ -470,10 +472,10 @@ func main() {
               <label>自定义 Max Tokens 值</label>
               <div class="yorha-number-stepper">
                 <button type="button" class="stepper-btn"
-                  onclick="stepValue('cfgMaxTokensCustom', -500, 1, 100000)">-</button>
-                <input type="number" id="cfgMaxTokensCustom" min="1" max="100000" value="8000">
+                  onclick="stepValue('cfgMaxTokensCustom', -500, 1, 384000)">-</button>
+                <input type="number" id="cfgMaxTokensCustom" min="1" max="384000" value="8000">
                 <button type="button" class="stepper-btn"
-                  onclick="stepValue('cfgMaxTokensCustom', 500, 1, 100000)">+</button>
+                  onclick="stepValue('cfgMaxTokensCustom', 500, 1, 384000)">+</button>
               </div>
             </div>
 

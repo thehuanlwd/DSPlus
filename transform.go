@@ -2,10 +2,36 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 )
 
-// in the messages slice.  Returns (-1, -1) if no user message is found.
+// extractTextContent 从消息的 content 字段中提取纯文本，兼容 string 与
+// Anthropic 风格的 text 块数组两种形式。无法提取（如 content 为 null 或
+// 非文本块）时返回空字符串——调用方据此判断该消息是否可被重组/注入。
+func extractTextContent(content interface{}) string {
+	switch v := content.(type) {
+	case string:
+		return v
+	case []interface{}:
+		var texts []string
+		for _, block := range v {
+			if b, ok := block.(map[string]interface{}); ok {
+				if t, _ := b["type"].(string); t == "text" {
+					if text, ok := b["text"].(string); ok {
+						texts = append(texts, text)
+					}
+				}
+			}
+		}
+		return strings.Join(texts, "\n")
+	default:
+		return ""
+	}
+}
+
+// userMessageIndices 返回消息切片中第一条与最后一条 user 消息的下标。
+// 若找不到 user 消息，返回 (-1, -1)。
 func userMessageIndices(messages []interface{}) (first, last int) {
 	first = -1
 	last = -1
@@ -61,20 +87,27 @@ func applyInjections(messages []interface{}, sysTarget, extraTarget int, systemT
 }
 
 // appendToUserContent appends text to a message's content, handling both
-// plain string and Anthropic content-array formats.
+// plain string and Anthropic content-array formats.  For unexpected content
+// types (e.g. null, number) it falls back to a string representation instead
+// of silently dropping the injected block.
 func appendToUserContent(userMsg interface{}, text string) {
 	m, ok := userMsg.(map[string]interface{})
 	if !ok {
 		return
 	}
-	if content, ok := m["content"].(string); ok {
+	switch content := m["content"].(type) {
+	case nil:
+		m["content"] = text
+	case string:
 		m["content"] = content + text
-	} else if contentBlocks, ok := m["content"].([]interface{}); ok {
-		contentBlocks = append(contentBlocks, map[string]interface{}{
+	case []interface{}:
+		m["content"] = append(content, map[string]interface{}{
 			"type": "text",
 			"text": text,
 		})
-		m["content"] = contentBlocks
+	default:
+		// 非预期的 content 类型：转为字符串拼接，避免注入块被静默丢弃导致提示词丢失。
+		m["content"] = fmt.Sprintf("%v", content) + text
 	}
 }
 
@@ -94,30 +127,44 @@ func transformOpenAIInPlace(data map[string]interface{}, sysPlacement string, ex
 		return false
 	}
 
+	// 第一遍：仅收集系统提示词文本，绝不破坏原始 messages。
 	var systemTexts []string
-	newMessages := make([]interface{}, 0, len(messages))
+	for _, mRaw := range messages {
+		m, ok := mRaw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if role, _ := m["role"].(string); role == "system" {
+			// 兼容 string 与 text 块数组两种系统提示词形式；无法提取时
+			// systemTexts 为空，injectSystem 为 false，原 system 消息被保留。
+			if txt := extractTextContent(m["content"]); txt != "" {
+				systemTexts = append(systemTexts, txt)
+			}
+		}
+	}
 
+	injectSystem := sysPlacement != "none" && len(systemTexts) > 0
+	injectExtra := extraPlacement != "none" && extraPrompt != ""
+
+	// 无需任何注入时直接返回，保持原始请求完全不动。
+	if !injectSystem && !injectExtra {
+		return false
+	}
+
+	// 第二遍：构建新 messages。仅当真正要重组系统提示词（injectSystem）
+	// 时才丢弃原始 system 消息；placement == "none" 时原样保留 system 消息。
+	dropSystem := injectSystem
+	newMessages := make([]interface{}, 0, len(messages))
 	for _, mRaw := range messages {
 		m, ok := mRaw.(map[string]interface{})
 		if !ok {
 			newMessages = append(newMessages, mRaw)
 			continue
 		}
-		role, _ := m["role"].(string)
-		if role == "system" {
-			if content, ok := m["content"].(string); ok {
-				systemTexts = append(systemTexts, content)
-			}
-			continue // drop system message
+		if role, _ := m["role"].(string); role == "system" && dropSystem {
+			continue
 		}
 		newMessages = append(newMessages, mRaw)
-	}
-
-	injectSystem := sysPlacement != "none" && len(systemTexts) > 0
-	injectExtra := extraPlacement != "none" && extraPrompt != ""
-
-	if !injectSystem && !injectExtra {
-		return false
 	}
 
 	firstUserIdx, lastUserIdx := userMessageIndices(newMessages)
@@ -195,7 +242,9 @@ func transformAnthropicInPlace(data map[string]interface{}, sysPlacement string,
 
 	applyInjections(messages, sysTarget, extraTarget, systemText, extraPrompt)
 
-	if hasSystem {
+	// 仅当真正重组了系统提示词（injectSystem）时才删除顶层 system 字段；
+	// placement == "none" 时保留原始 system 字段，避免系统提示词丢失。
+	if injectSystem && hasSystem {
 		delete(data, "system")
 	}
 	data["messages"] = messages

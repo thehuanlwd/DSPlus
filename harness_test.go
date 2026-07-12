@@ -474,6 +474,9 @@ func runAutoToolHarness(t *testing.T, isStream bool, isAnthropic bool) {
 	testConfig.Port = 8188
 	testConfig.OpenAIUpstream = "http://127.0.0.1:8189"
 	testConfig.AnthropicUpstream = "http://127.0.0.1:8189"
+	// 供应商模式：当前激活供应商的基础地址需指向本地 mock upstream
+	testConfig.Providers = []Provider{{Name: "DeepSeek", BaseURL: "http://127.0.0.1:8189", APIKey: ""}}
+	testConfig.ActiveProvider = "DeepSeek"
 	testConfig.AnalysisEnabled = true
 	testConfig.AnalysisPersistence = true
 
@@ -483,7 +486,7 @@ func runAutoToolHarness(t *testing.T, isStream bool, isAnthropic bool) {
 	// 3. 内存中启动 Gateway Proxy 监听 8188
 	initTrace()
 	safeTestConfig := NewSafeConfig(testConfig)
-	svc := InitAnalysisService(safeTestConfig)
+	svc := InitAnalysisService(safeTestConfig, nil)
 	// 清空原有的内存和磁盘 sessions，防止历史污染
 	svc.lock.Lock()
 	svc.sessions = make(map[string]*ConversationSession)
